@@ -1,6 +1,7 @@
 package codemod
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,25 +11,21 @@ import (
 	"time"
 )
 
-// Engine manages communication with the TypeScript codemod engine.
 type Engine struct {
-	Dir string // path to codemod-engine directory
+	Dir string
 }
 
-// Request is sent to the codemod engine via stdin.
 type Request struct {
 	RepoPath      string   `json:"repoPath"`
 	TargetVersion int      `json:"targetVersion"`
 	Codemods      []string `json:"codemods,omitempty"`
 }
 
-// Response is received from the codemod engine via stdout.
 type Response struct {
 	Results            []CodemodResult `json:"results"`
 	TotalFilesModified []string        `json:"totalFilesModified"`
 }
 
-// CodemodResult is the result of a single codemod.
 type CodemodResult struct {
 	Name          string   `json:"name"`
 	Success       bool     `json:"success"`
@@ -36,22 +33,24 @@ type CodemodResult struct {
 	Error         string   `json:"error,omitempty"`
 }
 
-// NewEngine creates a new codemod engine pointing at the given directory.
 func NewEngine(dir string) *Engine {
 	return &Engine{Dir: dir}
 }
 
-// Run executes the codemod engine against a repo.
 func (e *Engine) Run(repoPath string, targetVersion int, codemods []string) (*Response, error) {
-	engineDir := e.Dir
-	if !filepath.IsAbs(engineDir) {
-		exePath, _ := os.Executable()
-		candidate := filepath.Join(filepath.Dir(exePath), "..", e.Dir)
-		if _, err := os.Stat(filepath.Join(candidate, "package.json")); err == nil {
-			engineDir = candidate
-		}
+	// Resolve engine directory to absolute path
+	engineDir, err := resolveEngineDir(e.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve engine dir: %w", err)
 	}
 
+	// Resolve repo path to absolute
+	absRepoPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repo path: %w", err)
+	}
+
+	// Ensure node_modules exist
 	nodeModules := filepath.Join(engineDir, "node_modules")
 	if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
 		fmt.Println("  [CODEMOD] Installing codemod engine dependencies...")
@@ -65,7 +64,7 @@ func (e *Engine) Run(repoPath string, targetVersion int, codemods []string) (*Re
 	}
 
 	req := Request{
-		RepoPath:      repoPath,
+		RepoPath:      absRepoPath,
 		TargetVersion: targetVersion,
 		Codemods:      codemods,
 	}
@@ -78,21 +77,20 @@ func (e *Engine) Run(repoPath string, targetVersion int, codemods []string) (*Re
 	cmd := exec.Command("npx", "ts-node", "--transpile-only", "src/index.ts")
 	cmd.Dir = engineDir
 	cmd.Stdin = strings.NewReader(string(reqJSON))
-	cmd.Stderr = os.Stderr
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	done := make(chan error, 1)
-	var outBytes []byte
-
 	go func() {
-		var gErr error
-		outBytes, gErr = cmd.Output()
-		done <- gErr
+		done <- cmd.Run()
 	}()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			return nil, fmt.Errorf("codemod engine failed: %w\nOutput: %s", err, string(outBytes))
+			return nil, fmt.Errorf("codemod engine failed: %w (stderr: %s)", err, stderr.String())
 		}
 	case <-time.After(120 * time.Second):
 		if cmd.Process != nil {
@@ -101,10 +99,45 @@ func (e *Engine) Run(repoPath string, targetVersion int, codemods []string) (*Re
 		return nil, fmt.Errorf("codemod engine timed out after 120s")
 	}
 
+	outBytes := stdout.Bytes()
 	var resp Response
 	if err := json.Unmarshal(outBytes, &resp); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w\nRaw: %s", err, string(outBytes))
 	}
 
 	return &resp, nil
+}
+
+func resolveEngineDir(dir string) (string, error) {
+	// If already absolute, use directly
+	if filepath.IsAbs(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
+			return dir, nil
+		}
+		return "", fmt.Errorf("engine dir %s does not contain package.json", dir)
+	}
+
+	// Try relative to executable location
+	exePath, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(exePath), "..", dir)
+		abs, err := filepath.Abs(candidate)
+		if err == nil {
+			if _, err := os.Stat(filepath.Join(abs, "package.json")); err == nil {
+				return abs, nil
+			}
+		}
+	}
+
+	// Try relative to current working directory
+	cwd, err := os.Getwd()
+	if err == nil {
+		candidate := filepath.Join(cwd, dir)
+		if _, err := os.Stat(filepath.Join(candidate, "package.json")); err == nil {
+			abs, _ := filepath.Abs(candidate)
+			return abs, nil
+		}
+	}
+
+	return "", fmt.Errorf("cannot find codemod engine at %s", dir)
 }

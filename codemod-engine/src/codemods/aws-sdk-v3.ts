@@ -291,6 +291,13 @@ function transformSourceFile(sourceFile: SourceFile, repoPath: string): boolean 
     }
 
     addedImports.set(serviceInfo.pkg, importSet);
+
+    // DynamoDB.DocumentClient also needs DynamoDBClient from client-dynamodb
+    if (serviceName === 'DynamoDB.DocumentClient') {
+      const dynamoImportSet = addedImports.get('@aws-sdk/client-dynamodb') || new Set<string>();
+      dynamoImportSet.add('DynamoDBClient');
+      addedImports.set('@aws-sdk/client-dynamodb', dynamoImportSet);
+    }
   }
 
   // Insert new imports at the top
@@ -302,15 +309,39 @@ function transformSourceFile(sourceFile: SourceFile, repoPath: string): boolean 
   }
 
   // Transform constructor calls: new AWS.S3(...) → new S3Client(...)
+  // Special case: DynamoDB.DocumentClient needs DynamoDBDocumentClient.from(new DynamoDBClient(...))
   let text = sourceFile.getFullText();
   for (const [serviceName, usage] of usedServices) {
     const serviceInfo = serviceMap[serviceName];
-    // Replace new AWS.ServiceName(...) with new Client(...)
-    const ctorRegex = new RegExp(
-      `new\\s+(?:AWS\\.)?${serviceName.replace('.', '\\.')}\\s*\\(`,
-      'g'
-    );
-    text = text.replace(ctorRegex, `new ${serviceInfo.client}(`);
+
+    if (serviceName === 'DynamoDB.DocumentClient') {
+      // new AWS.DynamoDB.DocumentClient({...}) → DynamoDBDocumentClient.from(new DynamoDBClient({...}))
+      const ctorRegex = new RegExp(
+        `new\\s+(?:AWS\\.)?DynamoDB\\.DocumentClient\\s*\\(`,
+        'g'
+      );
+      // Find each occurrence and do balanced-paren replacement
+      let match;
+      const replacements: { start: number; end: number; replacement: string }[] = [];
+      while ((match = ctorRegex.exec(text)) !== null) {
+        const argsStart = match.index + match[0].length;
+        const closeIdx = findBalancedParen(text, argsStart);
+        if (closeIdx === -1) continue;
+        const args = text.substring(argsStart, closeIdx).trim();
+        const replacement = `DynamoDBDocumentClient.from(new DynamoDBClient(${args}))`;
+        replacements.push({ start: match.index, end: closeIdx + 1, replacement });
+      }
+      for (let i = replacements.length - 1; i >= 0; i--) {
+        const r = replacements[i];
+        text = text.substring(0, r.start) + r.replacement + text.substring(r.end);
+      }
+    } else {
+      const ctorRegex = new RegExp(
+        `new\\s+(?:AWS\\.)?${serviceName.replace('.', '\\.')}\\s*\\(`,
+        'g'
+      );
+      text = text.replace(ctorRegex, `new ${serviceInfo.client}(`);
+    }
   }
 
   // Transform method calls: varName.method(params).promise() → varName.send(new MethodCommand(params))
@@ -318,36 +349,170 @@ function transformSourceFile(sourceFile: SourceFile, repoPath: string): boolean 
     const serviceInfo = serviceMap[serviceName];
 
     for (const varName of usage.varNames) {
-      // Skip known non-AWS variables
       if (skipVars.has(varName)) continue;
 
       for (const [methodName, cmdClass] of Object.entries(serviceInfo.commands)) {
-        // Pattern: varName.methodName(args).promise()
-        const promisePattern = new RegExp(
+        // Find and replace each call site with balanced paren matching
+        const pattern = new RegExp(
           `${escapeRegExp(varName)}\\.${escapeRegExp(methodName)}\\s*\\(`,
           'g'
         );
 
-        text = text.replace(promisePattern, (match) => {
-          return `${varName}.send(new ${cmdClass}(`;
-        });
+        let match;
+        const replacements: { start: number; end: number; replacement: string }[] = [];
 
-        // Remove .promise() calls that now follow .send(...)
-        // The closing paren for send needs to be added
+        while ((match = pattern.exec(text)) !== null) {
+          const callStart = match.index;
+          const argsStart = callStart + match[0].length;
+
+          // Find balanced closing paren
+          const closeIdx = findBalancedParen(text, argsStart);
+          if (closeIdx === -1) continue;
+
+          // Extract the args (without the outer parens)
+          let args = text.substring(argsStart, closeIdx).trim();
+
+          // Strip callback function arguments: (params, function(err, data) {...})
+          // Keep only the first argument (the params object)
+          args = stripCallback(args);
+
+          // Check what follows the closing paren
+          let endIdx = closeIdx + 1; // past the ')'
+
+          // Strip .promise() if present
+          const afterClose = text.substring(endIdx);
+          const promiseMatch = afterClose.match(/^\s*\.promise\s*\(\s*\)/);
+          if (promiseMatch) {
+            endIdx += promiseMatch[0].length;
+          }
+
+          const replacement = `${varName}.send(new ${cmdClass}(${args}))`;
+          replacements.push({ start: callStart, end: endIdx, replacement });
+        }
+
+        // Apply replacements in reverse order to preserve indices
+        for (let i = replacements.length - 1; i >= 0; i--) {
+          const r = replacements[i];
+          text = text.substring(0, r.start) + r.replacement + text.substring(r.end);
+        }
       }
     }
   }
 
-  // Clean up .promise() calls
+  // Clean up any remaining .promise() calls
   text = text.replace(/\.promise\(\)/g, '');
 
-  // Fix double closing parens from send(new Command(args))  → ensure proper nesting
-  // This is handled by the balanced paren approach below
+  // Replace v2 type names with v3 equivalents
+  const typeReplacements: Record<string, { replacement: string; pkg: string }> = {
+    'PublishInput': { replacement: 'PublishCommandInput', pkg: '@aws-sdk/client-sns' },
+    'PublishResponse': { replacement: 'PublishCommandOutput', pkg: '@aws-sdk/client-sns' },
+    'SendMessageRequest': { replacement: 'SendMessageCommandInput', pkg: '@aws-sdk/client-sqs' },
+    'SendMessageResult': { replacement: 'SendMessageCommandOutput', pkg: '@aws-sdk/client-sqs' },
+    'GetItemInput': { replacement: 'GetItemCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+    'GetItemOutput': { replacement: 'GetItemCommandOutput', pkg: '@aws-sdk/client-dynamodb' },
+    'PutItemInput': { replacement: 'PutItemCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+    'QueryInput': { replacement: 'QueryCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+    'ScanInput': { replacement: 'ScanCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+    'GetObjectRequest': { replacement: 'GetObjectCommandInput', pkg: '@aws-sdk/client-s3' },
+    'PutObjectRequest': { replacement: 'PutObjectCommandInput', pkg: '@aws-sdk/client-s3' },
+    'GetSecretValueRequest': { replacement: 'GetSecretValueCommandInput', pkg: '@aws-sdk/client-secrets-manager' },
+    'GetSecretValueResponse': { replacement: 'GetSecretValueCommandOutput', pkg: '@aws-sdk/client-secrets-manager' },
+    'InvocationRequest': { replacement: 'InvokeCommandInput', pkg: '@aws-sdk/client-lambda' },
+    'InvocationResponse': { replacement: 'InvokeCommandOutput', pkg: '@aws-sdk/client-lambda' },
+  };
+
+  for (const [v2Type, { replacement, pkg }] of Object.entries(typeReplacements)) {
+    const typeRegex = new RegExp(`\\b${v2Type}\\b`, 'g');
+    if (typeRegex.test(text)) {
+      text = text.replace(typeRegex, replacement);
+      // Add the type to imports
+      const importMatch = text.match(new RegExp(`from\\s+['"]${escapeRegExp(pkg)}['"]`));
+      if (importMatch) {
+        // Add the type to the existing import
+        const importRegex = new RegExp(`(import\\s*\\{[^}]*)(}\\s*from\\s*['"]${escapeRegExp(pkg)}['"])`);
+        const existingMatch = text.match(importRegex);
+        if (existingMatch && !existingMatch[1].includes(replacement)) {
+          text = text.replace(importRegex, `$1, ${replacement} $2`);
+        }
+      }
+    }
+  }
 
   sourceFile.replaceWithText(text);
   changed = true;
 
   return changed;
+}
+
+/**
+ * Find the index of the balanced closing paren starting from position `start`
+ * (where `start` points to the character after the opening paren).
+ */
+function findBalancedParen(text: string, start: number): number {
+  let depth = 1;
+  let i = start;
+  while (i < text.length && depth > 0) {
+    const ch = text[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (depth === 0) return i;
+    // Skip string literals
+    if (ch === "'" || ch === '"' || ch === '`') {
+      i = skipString(text, i, ch);
+      continue;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function skipString(text: string, start: number, quote: string): number {
+  let i = start + 1;
+  while (i < text.length) {
+    if (text[i] === '\\') { i += 2; continue; }
+    if (text[i] === quote) return i + 1;
+    if (quote === '`' && text[i] === '$' && text[i + 1] === '{') {
+      // Template literal expression - skip balanced braces
+      i += 2;
+      let depth = 1;
+      while (i < text.length && depth > 0) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') depth--;
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Strip callback arguments from AWS SDK v2 calls.
+ * e.g., "params, function(err, data) { ... }" → "params"
+ * e.g., "params, (err, data) => { ... }" → "params"
+ */
+function stripCallback(args: string): string {
+  // Match trailing callback: , function(...) { ... } or , (...) => { ... }
+  // We need to find a comma followed by function/arrow at the top level
+  let depth = 0;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    if (ch === '(' || ch === '{' || ch === '[') depth++;
+    else if (ch === ')' || ch === '}' || ch === ']') depth--;
+    else if (ch === "'" || ch === '"' || ch === '`') {
+      i = skipString(args, i, ch) - 1;
+      continue;
+    }
+    else if (depth === 0 && ch === ',') {
+      // Check if what follows is a callback
+      const rest = args.substring(i + 1).trim();
+      if (rest.match(/^function\s*\(/) || rest.match(/^\([\w\s,]*\)\s*=>/)) {
+        return args.substring(0, i).trim();
+      }
+    }
+  }
+  return args;
 }
 
 function escapeRegExp(str: string): string {
