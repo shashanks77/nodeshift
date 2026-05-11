@@ -1,0 +1,18 @@
+{
+  "name": "nodeshift-codemod-engine",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "ts-node --transpile-only src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "ts-morph": "^22.0.0",
+    "glob": "^10.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0"
+  }
+}
