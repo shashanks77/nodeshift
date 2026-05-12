@@ -3,6 +3,10 @@ LAMBDA_BINARY=bootstrap
 GOOS_LINUX=linux
 GOARCH=amd64
 
+# Load .env file if it exists
+-include .env
+export
+
 .PHONY: build build-lambda deploy clean scan upgrade test help
 
 # Show available commands
