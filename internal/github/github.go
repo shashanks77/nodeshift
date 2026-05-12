@@ -190,11 +190,17 @@ func buildFixedSet(codemodsApplied []string) map[string]bool {
 		"uuid":       {"uuid"},
 	}
 
+	// Packages upgraded by the Go transformer (version bumps in package.json)
+	transformerFixed := []string{"typescript", "jest", "@types/node", "@types/jest", "ts-jest"}
+
 	fixed := make(map[string]bool)
 	for _, cm := range codemodsApplied {
 		for _, pkg := range codemodToPackages[cm] {
 			fixed[pkg] = true
 		}
+	}
+	for _, pkg := range transformerFixed {
+		fixed[pkg] = true
 	}
 	return fixed
 }
