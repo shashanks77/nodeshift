@@ -318,6 +318,12 @@ Use --dry-run to preview changes without pushing.`,
 				}
 			}
 
+			// Stamp new version onto detected configs for the PR body
+			targetStr := strconv.Itoa(target)
+			for i := range configs {
+				configs[i].NewVersion = targetStr
+			}
+
 			// Phase 5: Commit, push, and create/update PR
 			if canPR {
 				if err := gh.CommitAndPush(repoPath, filesChanged, branch); err != nil {

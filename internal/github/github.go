@@ -149,16 +149,24 @@ func (c *Client) generatePRBody(report types.UpgradeReport) string {
 
 	fmt.Fprintf(&b, "## Node.js Upgrade to %d\n\n", c.TargetVersion)
 	b.WriteString("### What changed\n\n")
-	b.WriteString("| File | Type | Old Version |\n|------|------|-------------|\n")
+	b.WriteString("| File | Type | Old Version | New Version |\n|------|------|-------------|-------------|\n")
 
 	for _, cfg := range report.DetectedConfigs {
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", cfg.File, cfg.Type, cfg.CurrentVersion)
+		newVer := cfg.NewVersion
+		if newVer == "" {
+			newVer = fmt.Sprintf("%d", c.TargetVersion)
+		}
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cfg.File, cfg.Type, cfg.CurrentVersion, newVer)
 	}
 
 	if len(report.DependencyIssues) > 0 {
-		b.WriteString("\n### Dependency Issues\n\n| Package | Severity | Issue |\n|---------|----------|-------|\n")
+		b.WriteString("\n### Dependency Issues\n\n| Package | Severity | Issue | Suggested Fix |\n|---------|----------|-------|---------------|\n")
 		for _, issue := range report.DependencyIssues {
-			fmt.Fprintf(&b, "| `%s` (%s) | %s | %s |\n", issue.Name, issue.CurrentVersion, issue.Severity, issue.Reason)
+			suggested := issue.SuggestedVersion
+			if suggested == "" {
+				suggested = "—"
+			}
+			fmt.Fprintf(&b, "| `%s` (%s) | %s | %s | %s |\n", issue.Name, issue.CurrentVersion, issue.Severity, issue.Reason, suggested)
 		}
 	}
 

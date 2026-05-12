@@ -5,6 +5,7 @@ type DetectedNodeConfig struct {
 	File           string `json:"file"`
 	Type           string `json:"type"`
 	CurrentVersion string `json:"currentVersion"`
+	NewVersion     string `json:"newVersion,omitempty"`
 	Line           int    `json:"line,omitempty"`
 }
 
