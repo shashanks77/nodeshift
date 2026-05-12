@@ -89,10 +89,10 @@ func (c *Client) CommitAndPush(repoPath string, files []string, branch string) e
 		return fmt.Errorf("git commit: %w", err)
 	}
 
-	cmd = exec.Command("git", "push", "--force-with-lease", "origin", branch)
+	cmd = exec.Command("git", "push", "--force", "origin", branch)
 	cmd.Dir = repoPath
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git push: %w", err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git push: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
