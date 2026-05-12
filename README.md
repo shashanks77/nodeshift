@@ -37,17 +37,20 @@ make build
 # Scan a repo (read-only report)
 make scan REPO=/path/to/project
 
-# Upgrade a local repo (applies changes + verifies, no PR)
-make upgrade REPO=/path/to/project
+# Upgrade a GitHub repo (clone + upgrade + PR)
+make upgrade REPO=https://github.com/SHL-India/FOCUS-tci-focus.git
 
-# Upgrade a remote GitHub repo (clone + upgrade + PR)
-make upgrade-remote OWNER=SHL-India REPO=FOCUS-tci-focus
+# Upgrade a local repo (upgrades + pushes PR to its GitHub remote)
+make upgrade REPO=../tci-focus
 
 # Specify target Node version (default: 24)
-make upgrade REPO=/path/to/project TARGET=22
+make upgrade REPO=../tci-focus TARGET=22
 
 # Specify base branch (default: master)
-make upgrade-remote OWNER=SHL-India REPO=my-repo BASE=develop
+make upgrade REPO=../tci-focus BASE=develop
+
+# Dry run (apply changes locally, no push/PR)
+./bin/nodeshift upgrade ../tci-focus --dry-run --codemods
 ```
 
 ## Setup

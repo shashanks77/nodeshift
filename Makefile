@@ -43,14 +43,18 @@ build-lambda:
 scan:
 	./bin/$(BINARY_NAME) scan --local $(REPO) --target $(or $(TARGET),24)
 
-# Run upgrade with codemods + verification (npm install + tsc)
+# Run upgrade (accepts GitHub URL or local path)
+# Examples:
+#   make upgrade REPO=https://github.com/SHL-India/FOCUS-tci-focus.git
+#   make upgrade REPO=../tci-focus
+#   make upgrade REPO=../tci-focus BASE=develop
+#   make upgrade REPO=../tci-focus --dry-run
 upgrade:
-	cd $(REPO) && git checkout -- . && cd - > /dev/null && \
-	./bin/$(BINARY_NAME) upgrade --local $(REPO) --target $(or $(TARGET),24) --codemods
+	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods
 
-# Run upgrade on a remote GitHub repo (clone + upgrade + PR)
-upgrade-remote:
-	./bin/$(BINARY_NAME) upgrade --owner $(OWNER) --repo $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods
+# Dry run - preview changes locally without pushing or creating PR
+dry-run:
+	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods --dry-run
 
 # Run tests
 test:

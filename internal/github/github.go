@@ -61,11 +61,6 @@ func (c *Client) Clone() (string, error) {
 func (c *Client) CreateBranch(repoPath string) (string, error) {
 	branch := "chore/node-" + strconv.Itoa(c.TargetVersion) + "-upgrade"
 
-	// Delete remote branch if it exists from a previous run (ignore errors)
-	del := exec.Command("git", "push", "origin", "--delete", branch)
-	del.Dir = repoPath
-	del.Run() // best-effort
-
 	cmd := exec.Command("git", "checkout", "-b", branch)
 	cmd.Dir = repoPath
 	if err := cmd.Run(); err != nil {

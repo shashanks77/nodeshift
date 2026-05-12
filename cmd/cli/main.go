@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -87,9 +88,6 @@ func scanCmd() *cobra.Command {
 
 func upgradeCmd() *cobra.Command {
 	var (
-		local      string
-		owner      string
-		repo       string
 		target     int
 		baseBranch string
 		token      string
@@ -99,24 +97,77 @@ func upgradeCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "upgrade",
+		Use:   "upgrade [repo-url-or-path]",
 		Short: "Upgrade Node version in a repo and raise a PR",
+		Long: `Upgrade a repository's Node.js version. Accepts either:
+  - A GitHub URL: https://github.com/org/repo.git (clones, upgrades, raises PR)
+  - A local path: ./my-repo or /path/to/repo (upgrades in place, raises PR on remote)
+  
+Use --dry-run to preview changes without pushing.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			repoInput := args[0]
+
 			if token == "" {
 				token = os.Getenv("GITHUB_TOKEN")
 			}
-			if token == "" && local == "" {
-				return fmt.Errorf("GITHUB_TOKEN required for remote repos")
+
+			// Determine if input is a URL or local path
+			isURL := strings.HasPrefix(repoInput, "https://") || strings.HasPrefix(repoInput, "git@")
+
+			var owner, repo, repoPath string
+			var isLocal bool
+
+			if isURL {
+				// Parse owner/repo from URL
+				owner, repo = parseGitHubURL(repoInput)
+				if owner == "" || repo == "" {
+					return fmt.Errorf("could not parse owner/repo from URL: %s", repoInput)
+				}
+				if token == "" {
+					return fmt.Errorf("GITHUB_TOKEN required for remote repos (set in .env or environment)")
+				}
+			} else {
+				// Local path — resolve and read remote
+				isLocal = true
+				repoPath = repoInput
+				// Make relative paths absolute
+				if !strings.HasPrefix(repoPath, "/") {
+					cwd, _ := os.Getwd()
+					repoPath = cwd + "/" + repoPath
+				}
+				// Read remote URL from git
+				remoteURL := getGitRemoteURL(repoPath)
+				if remoteURL != "" {
+					owner, repo = parseGitHubURL(remoteURL)
+				}
+				if owner == "" || repo == "" {
+					if !dryRun {
+						fmt.Println("  [WARN] Could not determine GitHub remote. Running in local-only mode (no PR).")
+					}
+				} else if token == "" {
+					fmt.Println("  [WARN] No GITHUB_TOKEN set. Running in local-only mode (no PR).")
+					owner = ""
+					repo = ""
+				}
 			}
+
+			canPR := owner != "" && repo != "" && token != "" && !dryRun
 
 			gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 
-			repoPath := local
-			if repoPath == "" {
+			if !isLocal {
 				var err error
 				repoPath, err = gh.Clone()
 				if err != nil {
 					return err
+				}
+			} else {
+				// Reset local repo to clean state
+				resetCmd := fmt.Sprintf("cd %s && git checkout -- .", repoPath)
+				exec := runShell(resetCmd)
+				if exec != nil {
+					// ignore reset errors
 				}
 			}
 
@@ -130,10 +181,8 @@ func upgradeCmd() *cobra.Command {
 				return err
 			}
 
-			localOnly := (local != "" && (owner == "" || repo == ""))
-
 			var branch string
-			if !localOnly {
+			if canPR {
 				branch, err = gh.CreateBranch(repoPath)
 				if err != nil {
 					return err
@@ -174,106 +223,103 @@ func upgradeCmd() *cobra.Command {
 			}
 
 			// Phase 3: Verification - npm install + tsc + tests
-			if !dryRun {
-				fmt.Println("\n  [VERIFY] Running npm install...")
-				vResult := verify.Verify(repoPath, 2)
-				if !vResult.NpmInstallOk {
-					fmt.Fprintf(os.Stderr, "  [WARN] npm install failed: %s\n", vResult.NpmErrors)
+			fmt.Println("\n  [VERIFY] Running npm install...")
+			vResult := verify.Verify(repoPath, 2)
+			if !vResult.NpmInstallOk {
+				fmt.Fprintf(os.Stderr, "  [WARN] npm install failed: %s\n", vResult.NpmErrors)
+			} else {
+				fmt.Println("  [OK] npm install succeeded")
+				if len(vResult.AutoFixed) > 0 {
+					fmt.Printf("  [FIX] Auto-fixed: %s\n", vResult.AutoFixed)
+					filesChanged = append(filesChanged, vResult.AutoFixed...)
+				}
+				if vResult.TscOk {
+					fmt.Println("  [OK] tsc --noEmit passed (zero errors)")
 				} else {
-					fmt.Println("  [OK] npm install succeeded")
-					if len(vResult.AutoFixed) > 0 {
-						fmt.Printf("  [FIX] Auto-fixed: %s\n", vResult.AutoFixed)
-						filesChanged = append(filesChanged, vResult.AutoFixed...)
-					}
-					if vResult.TscOk {
-						fmt.Println("  [OK] tsc --noEmit passed (zero errors)")
-					} else {
-						fmt.Printf("  [WARN] tsc found %d error(s):\n", len(vResult.TscErrors))
-						for _, e := range vResult.TscErrors {
-							fmt.Printf("    %s(%d,%d): %s %s\n", e.File, e.Line, e.Col, e.Code, e.Message)
-						}
-					}
-
-					// Always show test results
-					if vResult.TestsOk {
-						fmt.Println("  [OK] Tests passed")
-					} else if len(vResult.TestErrors) > 0 {
-						fmt.Printf("  [WARN] %d test(s) failed:\n", len(vResult.TestErrors))
-						for _, t := range vResult.TestErrors {
-							if t.TestSuite != "" {
-								fmt.Printf("    %s > %s\n", t.TestSuite, t.TestName)
-							} else {
-								fmt.Printf("    %s\n", t.TestName)
-							}
-							if t.Error != "" {
-								fmt.Printf("      %s\n", t.Error)
-							}
-						}
+					fmt.Printf("  [WARN] tsc found %d error(s):\n", len(vResult.TscErrors))
+					for _, e := range vResult.TscErrors {
+						fmt.Printf("    %s(%d,%d): %s %s\n", e.File, e.Line, e.Col, e.Code, e.Message)
 					}
 				}
 
-				// Phase 4: Vulnerability scan + fix
-				fmt.Println("\n  [AUDIT] Scanning for vulnerabilities...")
-				auditResult := verify.RunAudit(repoPath)
-				vResult.Audit = auditResult
-				beforeCounts := verify.AuditSummary(auditResult.Before)
-				beforeTotal := len(auditResult.Before)
-
-				if beforeTotal == 0 {
-					fmt.Println("  [OK] No vulnerabilities found")
-				} else {
-					fmt.Printf("  [WARN] Found %d vulnerabilities:", beforeTotal)
-					for _, sev := range []string{"critical", "high", "moderate", "low"} {
-						if c, ok := beforeCounts[sev]; ok {
-							fmt.Printf(" %d %s", c, sev)
-						}
-					}
-					fmt.Println()
-
-					if auditResult.FixApplied {
-						afterTotal := len(auditResult.After)
-						fixed := beforeTotal - afterTotal
-						if fixed > 0 {
-							fmt.Printf("  [FIX] npm audit fix resolved %d/%d vulnerabilities\n", fixed, beforeTotal)
-							filesChanged = append(filesChanged, "package-lock.json")
-						}
-						if afterTotal > 0 {
-							afterCounts := verify.AuditSummary(auditResult.After)
-							fmt.Printf("  [WARN] %d remaining:", afterTotal)
-							for _, sev := range []string{"critical", "high", "moderate", "low"} {
-								if c, ok := afterCounts[sev]; ok {
-									fmt.Printf(" %d %s", c, sev)
-								}
-							}
-							fmt.Println()
-							// Show remaining direct dep vulns (actionable)
-							for _, v := range auditResult.After {
-								if v.IsDirect && (v.Severity == "critical" || v.Severity == "high") {
-									fmt.Printf("    [%s] %s (direct dep)\n", strings.ToUpper(v.Severity), v.Name)
-								}
-							}
+				// Always show test results
+				if vResult.TestsOk {
+					fmt.Println("  [OK] Tests passed")
+				} else if len(vResult.TestErrors) > 0 {
+					fmt.Printf("  [WARN] %d test(s) failed:\n", len(vResult.TestErrors))
+					for _, t := range vResult.TestErrors {
+						if t.TestSuite != "" {
+							fmt.Printf("    %s > %s\n", t.TestSuite, t.TestName)
 						} else {
-							fmt.Println("  [OK] All vulnerabilities resolved")
+							fmt.Printf("    %s\n", t.TestName)
 						}
-
-						// Re-verify tsc + tests after audit fix changed deps
-						fmt.Println("\n  [VERIFY] Re-checking tsc after audit fix...")
-						tscOk2, tscErrors2 := verify.RunTsc(repoPath)
-						if tscOk2 {
-							fmt.Println("  [OK] tsc --noEmit still passes")
-						} else {
-							fmt.Printf("  [WARN] tsc found %d new error(s) after audit fix\n", len(tscErrors2))
-							for _, e := range tscErrors2 {
-								fmt.Printf("    %s(%d,%d): %s %s\n", e.File, e.Line, e.Col, e.Code, e.Message)
-							}
+						if t.Error != "" {
+							fmt.Printf("      %s\n", t.Error)
 						}
-					} else if auditResult.FixError != "" {
-						fmt.Printf("  [WARN] %s\n", auditResult.FixError)
 					}
 				}
 			}
 
-			if !localOnly {
+			// Phase 4: Vulnerability scan + fix
+			fmt.Println("\n  [AUDIT] Scanning for vulnerabilities...")
+			auditResult := verify.RunAudit(repoPath)
+			vResult.Audit = auditResult
+			beforeCounts := verify.AuditSummary(auditResult.Before)
+			beforeTotal := len(auditResult.Before)
+
+			if beforeTotal == 0 {
+				fmt.Println("  [OK] No vulnerabilities found")
+			} else {
+				fmt.Printf("  [WARN] Found %d vulnerabilities:", beforeTotal)
+				for _, sev := range []string{"critical", "high", "moderate", "low"} {
+					if c, ok := beforeCounts[sev]; ok {
+						fmt.Printf(" %d %s", c, sev)
+					}
+				}
+				fmt.Println()
+
+				if auditResult.FixApplied {
+					afterTotal := len(auditResult.After)
+					fixed := beforeTotal - afterTotal
+					if fixed > 0 {
+						fmt.Printf("  [FIX] npm audit fix resolved %d/%d vulnerabilities\n", fixed, beforeTotal)
+						filesChanged = append(filesChanged, "package-lock.json")
+					}
+					if afterTotal > 0 {
+						afterCounts := verify.AuditSummary(auditResult.After)
+						fmt.Printf("  [WARN] %d remaining:", afterTotal)
+						for _, sev := range []string{"critical", "high", "moderate", "low"} {
+							if c, ok := afterCounts[sev]; ok {
+								fmt.Printf(" %d %s", c, sev)
+							}
+						}
+						fmt.Println()
+						for _, v := range auditResult.After {
+							if v.IsDirect && (v.Severity == "critical" || v.Severity == "high") {
+								fmt.Printf("    [%s] %s (direct dep)\n", strings.ToUpper(v.Severity), v.Name)
+							}
+						}
+					} else {
+						fmt.Println("  [OK] All vulnerabilities resolved")
+					}
+
+					fmt.Println("\n  [VERIFY] Re-checking tsc after audit fix...")
+					tscOk2, tscErrors2 := verify.RunTsc(repoPath)
+					if tscOk2 {
+						fmt.Println("  [OK] tsc --noEmit still passes")
+					} else {
+						fmt.Printf("  [WARN] tsc found %d new error(s) after audit fix\n", len(tscErrors2))
+						for _, e := range tscErrors2 {
+							fmt.Printf("    %s(%d,%d): %s %s\n", e.File, e.Line, e.Col, e.Code, e.Message)
+						}
+					}
+				} else if auditResult.FixError != "" {
+					fmt.Printf("  [WARN] %s\n", auditResult.FixError)
+				}
+			}
+
+			// Phase 5: Commit, push, and create/update PR
+			if canPR {
 				if err := gh.CommitAndPush(repoPath, filesChanged, branch); err != nil {
 					return err
 				}
@@ -292,6 +338,8 @@ func upgradeCmd() *cobra.Command {
 				if prURL != "" {
 					fmt.Printf("\nPR: %s\n", prURL)
 				}
+			} else if dryRun {
+				fmt.Println("\n  [DRY RUN] Changes applied locally. No push/PR.")
 			}
 
 			printReport(owner+"/"+repo, configs, issues, filesChanged, target)
@@ -299,13 +347,10 @@ func upgradeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&local, "local", "l", "", "Work on local directory")
-	cmd.Flags().StringVarP(&owner, "owner", "o", "", "GitHub owner/org")
-	cmd.Flags().StringVarP(&repo, "repo", "r", "", "GitHub repo name")
 	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
-	cmd.Flags().StringVarP(&baseBranch, "base", "b", "main", "Base branch for PR")
+	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Base branch for PR")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview without pushing")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
 	cmd.Flags().BoolVar(&codemods, "codemods", false, "Run AST codemods (requires Node.js)")
 	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
 
@@ -354,4 +399,50 @@ func printReport(repoName string, configs []types.DetectedNodeConfig, issues []t
 	}
 
 	fmt.Println("\n============================================================")
+}
+
+// parseGitHubURL extracts owner and repo from a GitHub URL.
+// Supports: https://github.com/org/repo.git, https://github.com/org/repo, git@github.com:org/repo.git
+func parseGitHubURL(url string) (string, string) {
+	// Remove trailing .git
+	url = strings.TrimSuffix(url, ".git")
+
+	// HTTPS format: https://github.com/owner/repo or https://x-access-token:xxx@github.com/owner/repo
+	if strings.Contains(url, "github.com/") {
+		parts := strings.Split(url, "github.com/")
+		if len(parts) == 2 {
+			segments := strings.Split(parts[1], "/")
+			if len(segments) >= 2 {
+				return segments[0], segments[1]
+			}
+		}
+	}
+
+	// SSH format: git@github.com:owner/repo
+	if strings.HasPrefix(url, "git@github.com:") {
+		path := strings.TrimPrefix(url, "git@github.com:")
+		segments := strings.Split(path, "/")
+		if len(segments) >= 2 {
+			return segments[0], segments[1]
+		}
+	}
+
+	return "", ""
+}
+
+// getGitRemoteURL reads the origin remote URL from a local git repo
+func getGitRemoteURL(repoPath string) string {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// runShell runs a shell command and returns any error
+func runShell(command string) error {
+	cmd := exec.Command("sh", "-c", command)
+	return cmd.Run()
 }
