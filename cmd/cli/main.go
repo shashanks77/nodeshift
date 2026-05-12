@@ -130,7 +130,7 @@ func upgradeCmd() *cobra.Command {
 				return err
 			}
 
-			localOnly := (token == "" && local != "")
+			localOnly := (local != "" && (owner == "" || repo == ""))
 
 			var branch string
 			if !localOnly {
