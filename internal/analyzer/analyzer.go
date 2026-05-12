@@ -16,13 +16,13 @@ var nativeModules = map[string]string{
 	"xml2json":           "Uses node-expat native binding. Replace with fast-xml-parser or xml2js.",
 	"xml-to-json-stream": "Uses node-expat native binding. Replace with fast-xml-parser.",
 	"node-expat":         "Native XML parser. Replace with fast-xml-parser.",
-	"node-sass":      "Deprecated native module. Replace with sass (dart-sass).",
-	"bcrypt":         "Native module — ensure rebuilt for target Node ABI.",
-	"sharp":          "Native module — usually supports latest Node but needs rebuild.",
-	"canvas":         "Native module — check node-canvas compatibility.",
-	"grpc":           "Legacy native module. Migrate to @grpc/grpc-js.",
-	"sqlite3":        "Native module — ensure compatible version.",
-	"better-sqlite3": "Native module — usually keeps up with Node releases.",
+	"node-sass":          "Deprecated native module. Replace with sass (dart-sass).",
+	"bcrypt":             "Native module — ensure rebuilt for target Node ABI.",
+	"sharp":              "Native module — usually supports latest Node but needs rebuild.",
+	"canvas":             "Native module — check node-canvas compatibility.",
+	"grpc":               "Legacy native module. Migrate to @grpc/grpc-js.",
+	"sqlite3":            "Native module — ensure compatible version.",
+	"better-sqlite3":     "Native module — usually keeps up with Node releases.",
 }
 
 var eolPackages = map[string]struct {
