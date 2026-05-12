@@ -160,16 +160,41 @@ func (c *Client) generatePRBody(report types.UpgradeReport) string {
 	}
 
 	if len(report.DependencyIssues) > 0 {
-		b.WriteString("\n### Dependency Issues\n\n| Package | Severity | Issue | Suggested Fix |\n|---------|----------|-------|---------------|\n")
+		// Build a set of packages fixed by codemods
+		fixedByCodemod := buildFixedSet(report.CodemodsApplied)
+
+		b.WriteString("\n### Dependency Issues\n\n| Package | Severity | Issue | Suggested Fix | Status |\n|---------|----------|-------|---------------|--------|\n")
 		for _, issue := range report.DependencyIssues {
 			suggested := issue.SuggestedVersion
 			if suggested == "" {
-				suggested = "—"
+				suggested = "\u2014"
 			}
-			fmt.Fprintf(&b, "| `%s` (%s) | %s | %s | %s |\n", issue.Name, issue.CurrentVersion, issue.Severity, issue.Reason, suggested)
+			status := "⚠️ Manual"
+			if fixedByCodemod[issue.Name] {
+				status = "✅ Fixed"
+			}
+			fmt.Fprintf(&b, "| `%s` (%s) | %s | %s | %s | %s |\n", issue.Name, issue.CurrentVersion, issue.Severity, issue.Reason, suggested, status)
 		}
 	}
 
 	b.WriteString("\n---\n*Automated by nodeshift*\n")
 	return b.String()
+}
+
+// buildFixedSet maps codemod names to the dependency packages they fix.
+func buildFixedSet(codemodsApplied []string) map[string]bool {
+	// Maps codemod name → list of package names it resolves
+	codemodToPackages := map[string][]string{
+		"aws-sdk-v3": {"aws-sdk"},
+		"xml2json":   {"xml2json", "xml-to-json-stream"},
+		"uuid":       {"uuid"},
+	}
+
+	fixed := make(map[string]bool)
+	for _, cm := range codemodsApplied {
+		for _, pkg := range codemodToPackages[cm] {
+			fixed[pkg] = true
+		}
+	}
+	return fixed
 }

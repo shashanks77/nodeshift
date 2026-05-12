@@ -192,6 +192,7 @@ Use --dry-run to preview changes without pushing.`,
 			// Phase 1: AST codemods (TypeScript engine for code-level changes)
 			// Must run BEFORE package.json changes so shouldRun() still sees aws-sdk
 			var filesChanged []string
+			var codemodsApplied []string
 			if codemods {
 				engine := codemod.NewEngine(engineDir)
 				resp, cErr := engine.Run(repoPath, target, nil)
@@ -201,6 +202,9 @@ Use --dry-run to preview changes without pushing.`,
 					for _, r := range resp.Results {
 						if r.Success {
 							fmt.Printf("  [OK] Codemod %s: %d files modified\n", r.Name, len(r.FilesModified))
+							if len(r.FilesModified) > 0 {
+								codemodsApplied = append(codemodsApplied, r.Name)
+							}
 						} else {
 							fmt.Printf("  [FAIL] Codemod %s: %s\n", r.Name, r.Error)
 						}
@@ -335,6 +339,7 @@ Use --dry-run to preview changes without pushing.`,
 					DetectedConfigs:  configs,
 					DependencyIssues: issues,
 					FilesChanged:     filesChanged,
+					CodemodsApplied:  codemodsApplied,
 				}
 				prURL, err := gh.CreatePR(report, branch)
 				if err != nil {

@@ -25,6 +25,7 @@ type UpgradeReport struct {
 	DetectedConfigs  []DetectedNodeConfig `json:"detectedConfigs"`
 	DependencyIssues []DependencyIssue    `json:"dependencyIssues"`
 	FilesChanged     []string             `json:"filesChanged"`
+	CodemodsApplied  []string             `json:"codemodsApplied,omitempty"`
 }
 
 // RepoEntry is one repository to process (Lambda batch mode).
