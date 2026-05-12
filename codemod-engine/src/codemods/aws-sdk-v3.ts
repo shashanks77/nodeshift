@@ -123,6 +123,40 @@ const serviceMap: Record<string, { pkg: string; client: string; commands: Record
   },
 };
 
+// Maps v2 type names to v3 equivalents
+const v2TypeMap: Record<string, { replacement: string; pkg: string }> = {
+  'PublishInput': { replacement: 'PublishCommandInput', pkg: '@aws-sdk/client-sns' },
+  'PublishResponse': { replacement: 'PublishCommandOutput', pkg: '@aws-sdk/client-sns' },
+  'SendMessageRequest': { replacement: 'SendMessageCommandInput', pkg: '@aws-sdk/client-sqs' },
+  'SendMessageResult': { replacement: 'SendMessageCommandOutput', pkg: '@aws-sdk/client-sqs' },
+  'GetItemInput': { replacement: 'GetItemCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+  'GetItemOutput': { replacement: 'GetItemCommandOutput', pkg: '@aws-sdk/client-dynamodb' },
+  'PutItemInput': { replacement: 'PutItemCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+  'QueryInput': { replacement: 'QueryCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+  'ScanInput': { replacement: 'ScanCommandInput', pkg: '@aws-sdk/client-dynamodb' },
+  'GetObjectRequest': { replacement: 'GetObjectCommandInput', pkg: '@aws-sdk/client-s3' },
+  'PutObjectRequest': { replacement: 'PutObjectCommandInput', pkg: '@aws-sdk/client-s3' },
+  'GetSecretValueRequest': { replacement: 'GetSecretValueCommandInput', pkg: '@aws-sdk/client-secrets-manager' },
+  'GetSecretValueResponse': { replacement: 'GetSecretValueCommandOutput', pkg: '@aws-sdk/client-secrets-manager' },
+  'InvocationRequest': { replacement: 'InvokeCommandInput', pkg: '@aws-sdk/client-lambda' },
+  'InvocationResponse': { replacement: 'InvokeCommandOutput', pkg: '@aws-sdk/client-lambda' },
+};
+
+// Maps aws-sdk/clients/xxx sub-path imports to v3 packages
+function mapSubPathToV3Pkg(mod: string): string | null {
+  const match = mod.match(/^aws-sdk\/clients\/(.+)$/);
+  if (match) {
+    const svcName = match[1].toLowerCase();
+    // Handle known aliases
+    const aliases: Record<string, string> = {
+      'stepfunctions': 'sfn',
+      'secretsmanager': 'secrets-manager',
+    };
+    return `@aws-sdk/client-${aliases[svcName] || svcName}`;
+  }
+  return null;
+}
+
 // Variable names that should never be treated as AWS SDK instances
 const skipVars = new Set([
   'console', 'Math', 'JSON', 'Object', 'Array', 'Promise', 'Date',
@@ -263,19 +297,55 @@ function transformSourceFile(sourceFile: SourceFile, repoPath: string): boolean 
     }
   }
 
-  if (usedServices.size === 0) {
+  // Check for sub-path imports like `import { PublishInput } from 'aws-sdk/clients/sns'`
+  const subPathImports = awsImports.filter(i => {
+    const mod = i.getModuleSpecifierValue();
+    return mod.startsWith('aws-sdk/clients/') || mod.startsWith('aws-sdk/lib/');
+  });
+
+  if (usedServices.size === 0 && subPathImports.length === 0) {
     return false;
   }
 
-  // Now transform: replace imports
-  for (const imp of awsImports) {
+  // Build unified import map for all v3 imports
+  const addedImports = new Map<string, Set<string>>();
+
+  // Collect types from sub-path imports, then remove them
+  for (const imp of subPathImports) {
+    const mod = imp.getModuleSpecifierValue();
+    const v3Pkg = mapSubPathToV3Pkg(mod);
+    if (v3Pkg) {
+      const importSet = addedImports.get(v3Pkg) || new Set<string>();
+      for (const named of imp.getNamedImports()) {
+        const oldName = named.getName();
+        const mapping = v2TypeMap[oldName];
+        importSet.add(mapping ? mapping.replacement : oldName);
+      }
+      // Handle default imports (e.g., import SecretsManager from 'aws-sdk/clients/secretsmanager')
+      const defaultImport = imp.getDefaultImport();
+      if (defaultImport) {
+        // v2 default import is the service class; map to v3 client
+        const svcName = mod.replace('aws-sdk/clients/', '');
+        for (const [, svc] of Object.entries(serviceMap)) {
+          if (svc.pkg === v3Pkg) {
+            importSet.add(svc.client);
+            break;
+          }
+        }
+      }
+      addedImports.set(v3Pkg, importSet);
+      imp.remove();
+      changed = true;
+    }
+  }
+
+  // Remove main aws-sdk imports
+  for (const imp of awsImports.filter(i => !subPathImports.includes(i))) {
     imp.remove();
     changed = true;
   }
 
-  // Add new v3 imports
-  const addedImports = new Map<string, Set<string>>();
-
+  // Add service-based imports
   for (const [serviceName, usage] of usedServices) {
     const serviceInfo = serviceMap[serviceName];
     if (!serviceInfo) continue;
@@ -306,6 +376,17 @@ function transformSourceFile(sourceFile: SourceFile, repoPath: string): boolean 
     const namesList = Array.from(names).sort().join(', ');
     sourceFile.insertStatements(insertIdx, `import { ${namesList} } from '${pkg}';`);
     insertIdx++;
+  }
+
+  // If only sub-path imports existed (no service constructors), just do type replacement
+  if (usedServices.size === 0) {
+    let text = sourceFile.getFullText();
+    for (const [v2Type, { replacement }] of Object.entries(v2TypeMap)) {
+      text = text.replace(new RegExp(`\\b${v2Type}\\b`, 'g'), replacement);
+    }
+    text = text.replace(/\.promise\(\)/g, '');
+    sourceFile.replaceWithText(text);
+    return changed;
   }
 
   // Transform constructor calls: new AWS.S3(...) → new S3Client(...)
@@ -402,26 +483,8 @@ function transformSourceFile(sourceFile: SourceFile, repoPath: string): boolean 
   // Clean up any remaining .promise() calls
   text = text.replace(/\.promise\(\)/g, '');
 
-  // Replace v2 type names with v3 equivalents
-  const typeReplacements: Record<string, { replacement: string; pkg: string }> = {
-    'PublishInput': { replacement: 'PublishCommandInput', pkg: '@aws-sdk/client-sns' },
-    'PublishResponse': { replacement: 'PublishCommandOutput', pkg: '@aws-sdk/client-sns' },
-    'SendMessageRequest': { replacement: 'SendMessageCommandInput', pkg: '@aws-sdk/client-sqs' },
-    'SendMessageResult': { replacement: 'SendMessageCommandOutput', pkg: '@aws-sdk/client-sqs' },
-    'GetItemInput': { replacement: 'GetItemCommandInput', pkg: '@aws-sdk/client-dynamodb' },
-    'GetItemOutput': { replacement: 'GetItemCommandOutput', pkg: '@aws-sdk/client-dynamodb' },
-    'PutItemInput': { replacement: 'PutItemCommandInput', pkg: '@aws-sdk/client-dynamodb' },
-    'QueryInput': { replacement: 'QueryCommandInput', pkg: '@aws-sdk/client-dynamodb' },
-    'ScanInput': { replacement: 'ScanCommandInput', pkg: '@aws-sdk/client-dynamodb' },
-    'GetObjectRequest': { replacement: 'GetObjectCommandInput', pkg: '@aws-sdk/client-s3' },
-    'PutObjectRequest': { replacement: 'PutObjectCommandInput', pkg: '@aws-sdk/client-s3' },
-    'GetSecretValueRequest': { replacement: 'GetSecretValueCommandInput', pkg: '@aws-sdk/client-secrets-manager' },
-    'GetSecretValueResponse': { replacement: 'GetSecretValueCommandOutput', pkg: '@aws-sdk/client-secrets-manager' },
-    'InvocationRequest': { replacement: 'InvokeCommandInput', pkg: '@aws-sdk/client-lambda' },
-    'InvocationResponse': { replacement: 'InvokeCommandOutput', pkg: '@aws-sdk/client-lambda' },
-  };
-
-  for (const [v2Type, { replacement, pkg }] of Object.entries(typeReplacements)) {
+  // Replace v2 type names with v3 equivalents in code text
+  for (const [v2Type, { replacement, pkg }] of Object.entries(v2TypeMap)) {
     const typeRegex = new RegExp(`\\b${v2Type}\\b`, 'g');
     if (typeRegex.test(text)) {
       text = text.replace(typeRegex, replacement);

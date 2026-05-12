@@ -193,20 +193,20 @@ func upgradeCmd() *cobra.Command {
 							fmt.Printf("    %s(%d,%d): %s %s\n", e.File, e.Line, e.Col, e.Code, e.Message)
 						}
 					}
-					if vResult.TscOk {
-						if vResult.TestsOk {
-							fmt.Println("  [OK] Tests passed")
-						} else {
-							fmt.Printf("  [WARN] %d test(s) failed:\n", len(vResult.TestErrors))
-							for _, t := range vResult.TestErrors {
-								if t.TestSuite != "" {
-									fmt.Printf("    %s > %s\n", t.TestSuite, t.TestName)
-								} else {
-									fmt.Printf("    %s\n", t.TestName)
-								}
-								if t.Error != "" {
-									fmt.Printf("      %s\n", t.Error)
-								}
+
+					// Always show test results
+					if vResult.TestsOk {
+						fmt.Println("  [OK] Tests passed")
+					} else if len(vResult.TestErrors) > 0 {
+						fmt.Printf("  [WARN] %d test(s) failed:\n", len(vResult.TestErrors))
+						for _, t := range vResult.TestErrors {
+							if t.TestSuite != "" {
+								fmt.Printf("    %s > %s\n", t.TestSuite, t.TestName)
+							} else {
+								fmt.Printf("    %s\n", t.TestName)
+							}
+							if t.Error != "" {
+								fmt.Printf("      %s\n", t.Error)
 							}
 						}
 					}
