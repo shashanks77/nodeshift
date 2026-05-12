@@ -22,9 +22,9 @@ type DependencyIssue struct {
 // UpgradeReport summarises the upgrade for PR description and logging.
 type UpgradeReport struct {
 	Repo             string               `json:"repo"`
-	DetectedConfigs  []DetectedNodeConfig  `json:"detectedConfigs"`
-	DependencyIssues []DependencyIssue     `json:"dependencyIssues"`
-	FilesChanged     []string              `json:"filesChanged"`
+	DetectedConfigs  []DetectedNodeConfig `json:"detectedConfigs"`
+	DependencyIssues []DependencyIssue    `json:"dependencyIssues"`
+	FilesChanged     []string             `json:"filesChanged"`
 }
 
 // RepoEntry is one repository to process (Lambda batch mode).
