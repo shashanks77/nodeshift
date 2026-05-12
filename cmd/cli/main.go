@@ -183,7 +183,7 @@ func upgradeCmd() *cobra.Command {
 					fmt.Println("  [OK] npm install succeeded")
 					if len(vResult.AutoFixed) > 0 {
 						fmt.Printf("  [FIX] Auto-fixed: %s\n", vResult.AutoFixed)
-						filesChanged = append(filesChanged, "package.json")
+						filesChanged = append(filesChanged, vResult.AutoFixed...)
 					}
 					if vResult.TscOk {
 						fmt.Println("  [OK] tsc --noEmit passed (zero errors)")

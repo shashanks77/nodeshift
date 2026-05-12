@@ -85,6 +85,11 @@ func Verify(repoPath string, maxRetries int) VerifyResult {
 	}
 
 	// Always run tests regardless of tsc status
+	// FixTestConfig is called inside RunTests; capture its changes
+	configFixes := FixTestConfig(repoPath)
+	if len(configFixes) > 0 {
+		result.AutoFixed = append(result.AutoFixed, configFixes...)
+	}
 	result.TestsOk, result.TestErrors = RunTests(repoPath)
 
 	// If tests failed, try auto-fixing test files and retry
@@ -114,7 +119,6 @@ func RunTsc(repoPath string) (bool, []TscError) {
 }
 
 func RunTests(repoPath string) (bool, []TestError) {
-	FixTestConfig(repoPath)
 
 	env := os.Environ()
 	env = append(env,
@@ -152,23 +156,23 @@ func RunTests(repoPath string) (bool, []TestError) {
 	return true, nil
 }
 
-func FixTestConfig(repoPath string) {
+func FixTestConfig(repoPath string) []string {
+	var fixed []string
 	pkgPath := filepath.Join(repoPath, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
-		return
+		return fixed
 	}
 
 	var pkg map[string]interface{}
 	if err := json.Unmarshal(data, &pkg); err != nil {
-		return
+		return fixed
 	}
 
 	jest, ok := pkg["jest"].(map[string]interface{})
 	if !ok {
 		// Try jest.config.js instead
-		fixJestConfigJs(repoPath)
-		return
+		return fixJestConfigJs(repoPath)
 	}
 
 	modified := false
@@ -188,17 +192,20 @@ func FixTestConfig(repoPath string) {
 		pkg["jest"] = jest
 		out, err := json.MarshalIndent(pkg, "", "  ")
 		if err != nil {
-			return
+			return fixed
 		}
 		os.WriteFile(pkgPath, append(out, '\n'), 0644)
+		fixed = append(fixed, "package.json")
 	}
+	return fixed
 }
 
-func fixJestConfigJs(repoPath string) {
+func fixJestConfigJs(repoPath string) []string {
+	var fixed []string
 	configPath := filepath.Join(repoPath, "jest.config.js")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return
+		return fixed
 	}
 	content := string(data)
 	modified := false
@@ -221,12 +228,15 @@ func fixJestConfigJs(repoPath string) {
 		if firstBrace > 0 {
 			content = content[:firstBrace] + insertion + content[firstBrace:]
 			modified = true
+			fixed = append(fixed, "test/__aws-sdk-mock-setup.ts")
 		}
 	}
 
 	if modified {
 		os.WriteFile(configPath, []byte(content), 0644)
+		fixed = append(fixed, "jest.config.js")
 	}
+	return fixed
 }
 
 // createAwsSdkMockSetup creates a Jest setup file that mocks AWS SDK v3 send() calls

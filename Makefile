@@ -48,6 +48,10 @@ upgrade:
 	cd $(REPO) && git checkout -- . && cd - > /dev/null && \
 	./bin/$(BINARY_NAME) upgrade --local $(REPO) --target $(or $(TARGET),24) --codemods
 
+# Run upgrade on a remote GitHub repo (clone + upgrade + PR)
+upgrade-remote:
+	./bin/$(BINARY_NAME) upgrade --owner $(OWNER) --repo $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods
+
 # Run tests
 test:
 	go test ./...
