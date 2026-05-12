@@ -13,8 +13,9 @@ import (
 var reVersion = regexp.MustCompile(`(\d+)`)
 
 var nativeModules = map[string]string{
-	"xml2json":       "Uses node-expat native binding. Replace with fast-xml-parser or xml2js.",
-	"node-expat":     "Native XML parser. Replace with fast-xml-parser.",
+	"xml2json":           "Uses node-expat native binding. Replace with fast-xml-parser or xml2js.",
+	"xml-to-json-stream": "Uses node-expat native binding. Replace with fast-xml-parser.",
+	"node-expat":         "Native XML parser. Replace with fast-xml-parser.",
 	"node-sass":      "Deprecated native module. Replace with sass (dart-sass).",
 	"bcrypt":         "Native module — ensure rebuilt for target Node ABI.",
 	"sharp":          "Native module — usually supports latest Node but needs rebuild.",
