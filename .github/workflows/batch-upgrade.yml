@@ -43,6 +43,11 @@ jobs:
           npm ci
           npx tsc
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "nodeshift[bot]"
+          git config --global user.email "nodeshift-bot@users.noreply.github.com"
+
       - name: Run batch upgrade
         env:
           GITHUB_TOKEN: ${{ secrets.NODESHIFT_PAT }}
