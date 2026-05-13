@@ -2,5 +2,13 @@
   {
     "url": "https://github.com/SHL-India/FOCUS-tci-focus.git",
     "baseBranch": "develop"
+  },
+  {
+    "url": "https://github.com/SHL-India/TDM-service.user.validation.git",
+    "baseBranch": "qa"
+  },
+  {
+    "url": "https://github.com/SHL-India/TDM-service.user.upload.git",
+    "baseBranch": "qa"
   }
 ]
