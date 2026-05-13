@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,6 +28,7 @@ func main() {
 
 	rootCmd.AddCommand(scanCmd())
 	rootCmd.AddCommand(upgradeCmd())
+	rootCmd.AddCommand(batchCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -366,6 +369,266 @@ Use --dry-run to preview changes without pushing.`,
 	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
 
 	return cmd
+}
+
+func batchCmd() *cobra.Command {
+	var (
+		target     int
+		baseBranch string
+		token      string
+		dryRun     bool
+		codemods   bool
+		engineDir  string
+		reposFile  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "batch",
+		Short: "Upgrade multiple repos from a JSON file",
+		Long: `Process multiple repositories in sequence. Provide a JSON file with:
+[
+  {"url": "https://github.com/org/repo1.git", "baseBranch": "develop"},
+  {"url": "https://github.com/org/repo2.git"},
+  {"owner": "org", "name": "repo3", "baseBranch": "main"}
+]
+
+Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summary table.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if token == "" {
+				token = os.Getenv("GITHUB_TOKEN")
+			}
+			if token == "" {
+				return fmt.Errorf("GITHUB_TOKEN required for batch mode (set in .env or environment)")
+			}
+
+			// Read repo list
+			var repos []types.RepoEntry
+			data, err := os.ReadFile(reposFile)
+			if err != nil {
+				return fmt.Errorf("cannot read repos file %s: %w", reposFile, err)
+			}
+			if err := json.Unmarshal(data, &repos); err != nil {
+				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
+			}
+
+			if len(repos) == 0 {
+				return fmt.Errorf("no repos found in %s", reposFile)
+			}
+
+			fmt.Printf("\n=== NODESHIFT BATCH: %d repos, target Node %d ===\n\n", len(repos), target)
+
+			var results []types.BatchResult
+			for i, entry := range repos {
+				// Resolve URL from owner/name if not provided
+				repoURL := entry.URL
+				if repoURL == "" && entry.Owner != "" && entry.Name != "" {
+					repoURL = fmt.Sprintf("https://github.com/%s/%s.git", entry.Owner, entry.Name)
+				}
+				if repoURL == "" {
+					results = append(results, types.BatchResult{
+						Repo:   "unknown",
+						Status: "error",
+						Error:  "no url or owner/name provided",
+					})
+					continue
+				}
+
+				owner, repo := parseGitHubURL(repoURL)
+				repoLabel := owner + "/" + repo
+				base := baseBranch
+				if entry.BaseBranch != "" {
+					base = entry.BaseBranch
+				}
+
+				fmt.Printf("━━━ [%d/%d] %s (base: %s) ━━━\n", i+1, len(repos), repoLabel, base)
+				start := time.Now()
+
+				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, codemods, engineDir)
+				result.Repo = repoLabel
+
+				elapsed := time.Since(start).Round(time.Second)
+				switch result.Status {
+				case "success":
+					fmt.Printf("  ✅ Done in %s → %s\n\n", elapsed, result.PRUrl)
+				case "up-to-date":
+					fmt.Printf("  ⏭️  Already up-to-date (%s)\n\n", elapsed)
+				case "error":
+					fmt.Printf("  ❌ Failed in %s: %s\n\n", elapsed, result.Error)
+				}
+
+				results = append(results, result)
+			}
+
+			// Print summary table
+			printBatchSummary(results)
+
+			// Write results JSON
+			resultsJSON, _ := json.MarshalIndent(results, "", "  ")
+			resultsPath := "/tmp/nodeshift-batch-results.json"
+			os.WriteFile(resultsPath, resultsJSON, 0644)
+			fmt.Printf("\nResults written to %s\n", resultsPath)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&reposFile, "file", "f", "repos.json", "JSON file with repo list")
+	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Default base branch (overridden per-repo)")
+	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
+	cmd.Flags().BoolVar(&codemods, "codemods", false, "Run AST codemods (requires Node.js)")
+	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
+
+	return cmd
+}
+
+// processSingleRepo runs the full upgrade pipeline on one repo and returns a result.
+func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun, codemods bool, engineDir string) types.BatchResult {
+	gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
+
+	repoPath, err := gh.Clone()
+	if err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("clone: %v", err)}
+	}
+
+	configs, err := detector.Scan(repoPath)
+	if err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("scan: %v", err)}
+	}
+
+	issues, err := analyzer.Analyze(repoPath, target)
+	if err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("analyze: %v", err)}
+	}
+
+	branch, err := gh.CreateBranch(repoPath)
+	if err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("branch: %v", err)}
+	}
+
+	// Phase 1: AST codemods
+	var filesChanged []string
+	var codemodsApplied []string
+	if codemods {
+		engine := codemod.NewEngine(engineDir)
+		resp, cErr := engine.Run(repoPath, target, nil)
+		if cErr != nil {
+			fmt.Fprintf(os.Stderr, "  Codemod engine error: %v\n", cErr)
+		} else {
+			for _, r := range resp.Results {
+				if r.Success {
+					fmt.Printf("  [OK] Codemod %s: %d files modified\n", r.Name, len(r.FilesModified))
+					if len(r.FilesModified) > 0 {
+						codemodsApplied = append(codemodsApplied, r.Name)
+					}
+				} else {
+					fmt.Printf("  [FAIL] Codemod %s: %s\n", r.Name, r.Error)
+				}
+			}
+			filesChanged = append(filesChanged, resp.TotalFilesModified...)
+		}
+	}
+
+	// Phase 2: Config transforms + package.json upgrades
+	configChanged, err := transformer.Transform(repoPath, configs, target, issues)
+	if err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("transform: %v", err)}
+	}
+	filesChanged = append(filesChanged, configChanged...)
+
+	if len(filesChanged) == 0 {
+		return types.BatchResult{Status: "up-to-date"}
+	}
+
+	// Phase 3: Verification
+	fmt.Println("  [VERIFY] Running npm install...")
+	vResult := verify.Verify(repoPath, 2)
+	if !vResult.NpmInstallOk {
+		fmt.Fprintf(os.Stderr, "  [WARN] npm install failed: %s\n", vResult.NpmErrors)
+	} else {
+		fmt.Println("  [OK] npm install succeeded")
+		if len(vResult.AutoFixed) > 0 {
+			fmt.Printf("  [FIX] Auto-fixed: %s\n", vResult.AutoFixed)
+			filesChanged = append(filesChanged, vResult.AutoFixed...)
+		}
+		if vResult.TscOk {
+			fmt.Println("  [OK] tsc passed")
+		} else {
+			fmt.Printf("  [WARN] tsc: %d error(s)\n", len(vResult.TscErrors))
+		}
+		if vResult.TestsOk {
+			fmt.Println("  [OK] Tests passed")
+		} else if len(vResult.TestErrors) > 0 {
+			fmt.Printf("  [WARN] %d test(s) failed\n", len(vResult.TestErrors))
+		}
+	}
+
+	// Phase 4: Audit
+	auditResult := verify.RunAudit(repoPath)
+	if auditResult.FixApplied && len(auditResult.Before) > len(auditResult.After) {
+		filesChanged = append(filesChanged, "package-lock.json")
+	}
+
+	// Stamp new version
+	targetStr := strconv.Itoa(target)
+	for i := range configs {
+		configs[i].NewVersion = targetStr
+	}
+
+	// Phase 5: Commit, push, PR
+	if dryRun {
+		return types.BatchResult{Status: "success", PRUrl: "dry-run://no-pr"}
+	}
+
+	if err := gh.CommitAndPush(repoPath, filesChanged, branch); err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("push: %v", err)}
+	}
+
+	report := types.UpgradeReport{
+		Repo:             owner + "/" + repo,
+		DetectedConfigs:  configs,
+		DependencyIssues: issues,
+		FilesChanged:     filesChanged,
+		CodemodsApplied:  codemodsApplied,
+	}
+
+	prURL, err := gh.CreatePR(report, branch)
+	if err != nil {
+		return types.BatchResult{Status: "error", Error: fmt.Sprintf("PR: %v", err)}
+	}
+
+	return types.BatchResult{Status: "success", PRUrl: prURL}
+}
+
+func printBatchSummary(results []types.BatchResult) {
+	fmt.Println("\n╔══════════════════════════════════════════════════════════╗")
+	fmt.Println("║                  BATCH SUMMARY                         ║")
+	fmt.Println("╠══════════════════════════════════════════════════════════╣")
+
+	success, upToDate, errors := 0, 0, 0
+	for _, r := range results {
+		var icon, detail string
+		switch r.Status {
+		case "success":
+			icon = "✅"
+			detail = r.PRUrl
+			success++
+		case "up-to-date":
+			icon = "⏭️ "
+			detail = "already up-to-date"
+			upToDate++
+		case "error":
+			icon = "❌"
+			detail = r.Error
+			errors++
+		}
+		fmt.Printf("║ %s %-30s %s\n", icon, r.Repo, detail)
+	}
+
+	fmt.Println("╠══════════════════════════════════════════════════════════╣")
+	fmt.Printf("║ Total: %d  |  ✅ %d  |  ⏭️  %d  |  ❌ %d\n", len(results), success, upToDate, errors)
+	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 }
 
 func printReport(repoName string, configs []types.DetectedNodeConfig, issues []types.DependencyIssue, filesChanged []string, target int) {

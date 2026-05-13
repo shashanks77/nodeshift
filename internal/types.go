@@ -28,9 +28,18 @@ type UpgradeReport struct {
 	CodemodsApplied  []string             `json:"codemodsApplied,omitempty"`
 }
 
-// RepoEntry is one repository to process (Lambda batch mode).
+// RepoEntry is one repository to process (batch mode).
 type RepoEntry struct {
-	Owner      string `json:"owner"`
-	Name       string `json:"name"`
+	Owner      string `json:"owner,omitempty"`
+	Name       string `json:"name,omitempty"`
+	URL        string `json:"url,omitempty"`
 	BaseBranch string `json:"baseBranch,omitempty"`
+}
+
+// BatchResult holds the outcome of processing one repo in batch mode.
+type BatchResult struct {
+	Repo   string `json:"repo"`
+	Status string `json:"status"` // "success", "up-to-date", "error"
+	PRUrl  string `json:"prUrl,omitempty"`
+	Error  string `json:"error,omitempty"`
 }

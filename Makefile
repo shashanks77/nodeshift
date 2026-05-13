@@ -7,7 +7,7 @@ GOARCH=amd64
 -include .env
 export
 
-.PHONY: build build-lambda deploy clean scan upgrade test help
+.PHONY: build build-lambda deploy clean scan upgrade batch test help
 
 # Show available commands
 help:
@@ -17,6 +17,7 @@ help:
 	@echo "  make build              Build the CLI binary"
 	@echo "  make scan REPO=<path>   Scan repo and show upgrade report (no changes)"
 	@echo "  make upgrade REPO=<path> Reset, upgrade, and verify (npm i + tsc)"
+	@echo "  make batch FILE=repos.json  Upgrade multiple repos from a JSON file"
 	@echo "  make test               Run Go tests"
 	@echo "  make build-lambda       Build Lambda deployment zip"
 	@echo "  make deploy             Deploy Lambda to AWS"
@@ -55,6 +56,14 @@ upgrade:
 # Dry run - preview changes locally without pushing or creating PR
 dry-run:
 	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods --dry-run
+
+# Batch upgrade - process multiple repos from a JSON file
+# Examples:
+#   make batch FILE=repos.json
+#   make batch FILE=repos.json TARGET=22
+#   make batch FILE=repos.json --dry-run
+batch:
+	./bin/$(BINARY_NAME) batch --file $(or $(FILE),repos.json) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods
 
 # Run tests
 test:
