@@ -16,9 +16,39 @@ on:
         default: false
 
 jobs:
-  batch-upgrade:
+  # Read repos.json and create a matrix entry per repo
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout nodeshift
+        uses: actions/checkout@v4
+
+      - name: Build repo matrix
+        id: set-matrix
+        run: |
+          MATRIX=$(python3 -c "
+          import json
+          with open('repos.json') as f:
+              repos = json.load(f)
+          for r in repos:
+              parts = r['url'].replace('.git','').split('/')
+              r['name'] = f\"{parts[-2]}/{parts[-1]}\"
+          print(json.dumps({'include': repos}))
+          ")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  # Each repo runs as a separate parallel job
+  upgrade:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    name: "upgrade: ${{ matrix.name }}"
 
     steps:
       - name: Checkout nodeshift
@@ -48,14 +78,14 @@ jobs:
           git config --global user.name "nodeshift[bot]"
           git config --global user.email "nodeshift-bot@users.noreply.github.com"
 
-      - name: Run batch upgrade
+      - name: "Upgrade ${{ matrix.name }}"
         env:
           GITHUB_TOKEN: ${{ secrets.NODESHIFT_PAT }}
         run: |
           TARGET="${{ github.event.inputs.target || '24' }}"
           DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
 
-          ARGS="batch --file repos.json --target $TARGET --engine-dir ./codemod-engine"
+          ARGS="upgrade ${{ matrix.url }} --target $TARGET --base ${{ matrix.baseBranch }} --codemods --engine-dir ./codemod-engine"
 
           if [ "$DRY_RUN" = "true" ]; then
             ARGS="$ARGS --dry-run"
