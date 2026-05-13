@@ -1,0 +1,59 @@
+name: Node.js Batch Upgrade
+
+on:
+  # Run every Monday at 9 AM UTC
+  schedule:
+    - cron: '0 9 * * 1'
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target Node.js version'
+        default: '24'
+      dry_run:
+        description: 'Dry run (no PRs created)'
+        type: boolean
+        default: false
+
+jobs:
+  batch-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout nodeshift
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build nodeshift binary
+        run: go build -o bin/nodeshift ./cmd/cli
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install codemod engine
+        run: |
+          cd codemod-engine
+          npm ci
+          npx tsc
+
+      - name: Run batch upgrade
+        env:
+          GITHUB_TOKEN: ${{ secrets.NODESHIFT_PAT }}
+        run: |
+          TARGET="${{ github.event.inputs.target || '24' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+
+          ARGS="batch --file repos.json --target $TARGET --engine-dir ./codemod-engine"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          ./bin/nodeshift $ARGS
