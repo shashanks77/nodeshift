@@ -51,6 +51,10 @@ func transformConfig(repoPath string, cfg types.DetectedNodeConfig, target int) 
 		return transformPackageEngines(repoPath, cfg, target)
 	case "ci-workflow":
 		return transformCIWorkflow(repoPath, cfg, target)
+	case "tsconfig-target":
+		return transformTsconfigTarget(repoPath, cfg, target)
+	case "serverless-pseudo-params":
+		return transformServerlessPseudoParams(repoPath, cfg)
 	}
 	return false, nil
 }
@@ -135,6 +139,85 @@ func transformCIWorkflow(repoPath string, cfg types.DetectedNodeConfig, target i
 	re := regexp.MustCompile(`node-version:\s*['"]?\d+['"]?`)
 	content := string(data)
 	updated := re.ReplaceAllString(content, fmt.Sprintf("node-version: '%d'", target))
+
+	if updated == content {
+		return false, nil
+	}
+	return true, os.WriteFile(fullPath, []byte(updated), 0644)
+}
+
+// nodeVersionToESTarget maps Node major version to the best ES target
+func nodeVersionToESTarget(nodeVersion int) string {
+	switch {
+	case nodeVersion >= 24:
+		return "ES2024"
+	case nodeVersion >= 22:
+		return "ES2023"
+	case nodeVersion >= 20:
+		return "ES2022"
+	case nodeVersion >= 18:
+		return "ES2022"
+	case nodeVersion >= 16:
+		return "ES2021"
+	default:
+		return "ES2020"
+	}
+}
+
+func transformTsconfigTarget(repoPath string, cfg types.DetectedNodeConfig, target int) (bool, error) {
+	fullPath := filepath.Join(repoPath, cfg.File)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return false, err
+	}
+
+	newTarget := nodeVersionToESTarget(target)
+	content := string(data)
+
+	// Replace the target value, preserving surrounding JSON structure
+	re := regexp.MustCompile(`("target"\s*:\s*)"(?:ES\d+|es\d+|ESNext|esnext)"`)
+	updated := re.ReplaceAllString(content, `${1}"`+newTarget+`"`)
+
+	if updated == content {
+		return false, nil
+	}
+	return true, os.WriteFile(fullPath, []byte(updated), 0644)
+}
+
+func transformServerlessPseudoParams(repoPath string, cfg types.DetectedNodeConfig) (bool, error) {
+	fullPath := filepath.Join(repoPath, cfg.File)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return false, err
+	}
+
+	content := string(data)
+
+	// Map #{AWS::X} to ${aws:x} (Serverless Framework v3+ native syntax)
+	replacements := map[string]string{
+		"#{AWS::AccountId}": "${aws:accountId}",
+		"#{AWS::Region}":    "${self:provider.region}",
+		"#{AWS::Partition}": "${aws:partition}",
+		"#{AWS::StackName}": "${aws:stackName}",
+		"#{AWS::StackId}":   "${aws:stackId}",
+	}
+
+	updated := content
+	for old, newVal := range replacements {
+		updated = strings.ReplaceAll(updated, old, newVal)
+	}
+
+	// Remove serverless-pseudo-parameters plugin line
+	lines := strings.Split(updated, "\n")
+	var filtered []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "- serverless-pseudo-parameters" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	updated = strings.Join(filtered, "\n")
 
 	if updated == content {
 		return false, nil
@@ -244,6 +327,31 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 				devDeps["@types/node"] = fmt.Sprintf("^%d.0.0", target)
 				modified = true
 			}
+
+		case "nodemon":
+			if v, ok := deps["nodemon"]; ok {
+				_ = v
+				deps["nodemon"] = "^3.1.0"
+				modified = true
+			}
+			if v, ok := devDeps["nodemon"]; ok {
+				_ = v
+				devDeps["nodemon"] = "^3.1.0"
+				modified = true
+			}
+
+		case "serverless-offline":
+			if v, ok := devDeps["serverless-offline"]; ok {
+				_ = v
+				devDeps["serverless-offline"] = "^14.0.0"
+				modified = true
+			}
+
+		case "serverless-pseudo-parameters":
+			// Remove the deprecated plugin entirely
+			delete(deps, "serverless-pseudo-parameters")
+			delete(devDeps, "serverless-pseudo-parameters")
+			modified = true
 		}
 	}
 

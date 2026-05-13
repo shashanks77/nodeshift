@@ -41,6 +41,20 @@ var eolPackages = map[string]struct {
 		Reason:      "Deprecated. No longer maintained.",
 		Replacement: "eslint + @typescript-eslint",
 	},
+	"serverless-pseudo-parameters": {
+		Reason:      "Deprecated. Serverless Framework v3+ supports #{AWS::*} natively as ${aws:*}.",
+		Replacement: "Remove plugin and use ${aws:accountId}, ${aws:partition}, etc.",
+	},
+}
+
+// outdatedPackages tracks packages where a major version bump is needed for Node compat
+var outdatedPackages = map[string]struct {
+	MinMajor    int
+	Reason      string
+	SuggestedVer string
+}{
+	"nodemon": {MinMajor: 3, Reason: "nodemon 2.x has compatibility issues with Node 20+. Upgrade to 3.x.", SuggestedVer: "^3.1.0"},
+	"serverless-offline": {MinMajor: 14, Reason: "serverless-offline <14 incompatible with Serverless v3+ and Node 20+.", SuggestedVer: "^14.0.0"},
 }
 
 func Analyze(repoPath string, targetVersion int) ([]types.DependencyIssue, error) {
@@ -133,6 +147,22 @@ func Analyze(repoPath string, targetVersion int) ([]types.DependencyIssue, error
 				Reason:           "@types/node should match target Node version.",
 				SuggestedVersion: "^" + strconv.Itoa(targetVersion) + ".0.0",
 			})
+		}
+	}
+
+	// Check for outdated packages that need major version bumps
+	for name, info := range outdatedPackages {
+		if ver, ok := allDeps[name]; ok {
+			if major := extractMajor(ver); major > 0 && major < info.MinMajor {
+				issues = append(issues, types.DependencyIssue{
+					Name:             name,
+					CurrentVersion:   ver,
+					Issue:            "outdated",
+					Severity:         "medium",
+					Reason:           info.Reason,
+					SuggestedVersion: info.SuggestedVer,
+				})
+			}
 		}
 	}
 

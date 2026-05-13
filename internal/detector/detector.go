@@ -12,10 +12,12 @@ import (
 )
 
 var (
-	reServerlessRuntime = regexp.MustCompile(`runtime:\s*(nodejs(\d+)\.x)`)
-	reDockerFrom        = regexp.MustCompile(`(?i)FROM\s+node:(\d+)`)
-	reNodeVersion       = regexp.MustCompile(`v?(\d+)`)
-	reCINodeVersion     = regexp.MustCompile(`node-version:\s*['"]?(\d+)`)
+	reServerlessRuntime    = regexp.MustCompile(`runtime:\s*(nodejs(\d+)\.x)`)
+	reDockerFrom          = regexp.MustCompile(`(?i)FROM\s+node:(\d+)`)
+	reNodeVersion         = regexp.MustCompile(`v?(\d+)`)
+	reCINodeVersion       = regexp.MustCompile(`node-version:\s*['"]?(\d+)`)
+	reTsconfigTarget      = regexp.MustCompile(`"target"\s*:\s*"(ES\d+|es\d+|ESNext|esnext)"`) 
+	rePseudoParam         = regexp.MustCompile(`#\{AWS::(\w+)\}`)
 )
 
 func Scan(repoPath string) ([]types.DetectedNodeConfig, error) {
@@ -28,6 +30,8 @@ func Scan(repoPath string) ([]types.DetectedNodeConfig, error) {
 		detectNodeVersionFile,
 		detectPackageEngines,
 		detectGitHubActions,
+		detectTsconfig,
+		detectServerlessPseudoParams,
 	}
 
 	for _, fn := range detectors {
@@ -199,6 +203,46 @@ func detectGitHubActions(repoPath string) ([]types.DetectedNodeConfig, error) {
 					Line:           m.line,
 				})
 			}
+		}
+	}
+	return configs, nil
+}
+
+func detectTsconfig(repoPath string) ([]types.DetectedNodeConfig, error) {
+	var configs []types.DetectedNodeConfig
+	// Only check root tsconfig.json
+	tscPath := filepath.Join(repoPath, "tsconfig.json")
+	if _, err := os.Stat(tscPath); os.IsNotExist(err) {
+		return configs, nil
+	}
+	matches := scanFileRegex(tscPath, reTsconfigTarget)
+	for _, m := range matches {
+		if len(m.groups) >= 1 {
+			configs = append(configs, types.DetectedNodeConfig{
+				File:           "tsconfig.json",
+				Type:           "tsconfig-target",
+				CurrentVersion: m.groups[0],
+				Line:           m.line,
+			})
+		}
+	}
+	return configs, nil
+}
+
+func detectServerlessPseudoParams(repoPath string) ([]types.DetectedNodeConfig, error) {
+	var configs []types.DetectedNodeConfig
+	patterns := []string{"serverless.yml", "serverless.yaml"}
+	files := findFiles(repoPath, patterns)
+	for _, file := range files {
+		matches := scanFileRegex(file, rePseudoParam)
+		if len(matches) > 0 {
+			rel, _ := filepath.Rel(repoPath, file)
+			configs = append(configs, types.DetectedNodeConfig{
+				File:           rel,
+				Type:           "serverless-pseudo-params",
+				CurrentVersion: "#{AWS::*}",
+				Line:           matches[0].line,
+			})
 		}
 	}
 	return configs, nil
