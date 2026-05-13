@@ -477,7 +477,7 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Default base branch (overridden per-repo)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().BoolVar(&codemods, "codemods", false, "Run AST codemods (requires Node.js)")
+	cmd.Flags().BoolVar(&codemods, "codemods", true, "Run AST codemods (disable with --codemods=false)")
 	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
 
 	return cmd
