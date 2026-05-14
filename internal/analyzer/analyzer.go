@@ -49,11 +49,11 @@ var eolPackages = map[string]struct {
 
 // outdatedPackages tracks packages where a major version bump is needed for Node compat
 var outdatedPackages = map[string]struct {
-	MinMajor    int
-	Reason      string
+	MinMajor     int
+	Reason       string
 	SuggestedVer string
 }{
-	"nodemon": {MinMajor: 3, Reason: "nodemon 2.x has compatibility issues with Node 20+. Upgrade to 3.x.", SuggestedVer: "^3.1.0"},
+	"nodemon":            {MinMajor: 3, Reason: "nodemon 2.x has compatibility issues with Node 20+. Upgrade to 3.x.", SuggestedVer: "^3.1.0"},
 	"serverless-offline": {MinMajor: 14, Reason: "serverless-offline <14 incompatible with Serverless v3+ and Node 20+.", SuggestedVer: "^14.0.0"},
 }
 

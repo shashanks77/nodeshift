@@ -12,12 +12,12 @@ import (
 )
 
 var (
-	reServerlessRuntime    = regexp.MustCompile(`runtime:\s*(nodejs(\d+)\.x)`)
-	reDockerFrom          = regexp.MustCompile(`(?i)FROM\s+node:(\d+)`)
-	reNodeVersion         = regexp.MustCompile(`v?(\d+)`)
-	reCINodeVersion       = regexp.MustCompile(`node-version:\s*['"]?(\d+)`)
-	reTsconfigTarget      = regexp.MustCompile(`"target"\s*:\s*"(ES\d+|es\d+|ESNext|esnext)"`) 
-	rePseudoParam         = regexp.MustCompile(`#\{AWS::(\w+)\}`)
+	reServerlessRuntime = regexp.MustCompile(`runtime:\s*(nodejs(\d+)\.x)`)
+	reDockerFrom        = regexp.MustCompile(`(?i)FROM\s+node:(\d+)`)
+	reNodeVersion       = regexp.MustCompile(`v?(\d+)`)
+	reCINodeVersion     = regexp.MustCompile(`node-version:\s*['"]?(\d+)`)
+	reTsconfigTarget    = regexp.MustCompile(`"target"\s*:\s*"(ES\d+|es\d+|ESNext|esnext)"`)
+	rePseudoParam       = regexp.MustCompile(`#\{AWS::(\w+)\}`)
 )
 
 func Scan(repoPath string) ([]types.DetectedNodeConfig, error) {
