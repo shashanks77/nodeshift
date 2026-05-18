@@ -333,6 +333,13 @@ Use --dry-run to preview changes without pushing.`,
 
 			// Phase 5: Commit, push, and create/update PR
 			if canPR {
+				// Do not push/PR if tests are failing
+				if !vResult.TestsOk {
+					fmt.Println("\n  [SKIP] Tests failed — not creating/updating PR.")
+					printReport(owner+"/"+repo, configs, issues, filesChanged, target)
+					return nil
+				}
+
 				if err := gh.CommitAndPush(repoPath, filesChanged, branch); err != nil {
 					return err
 				}
