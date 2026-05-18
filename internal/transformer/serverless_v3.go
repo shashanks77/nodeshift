@@ -112,6 +112,21 @@ func detectServerlessVersion(repoPath string) int {
 		return 3
 	}
 
+	// If serverless.yml exists and serverless plugins are in package.json,
+	// assume v3 (many projects install serverless globally or via CI)
+	for _, section := range []string{"devDependencies", "dependencies"} {
+		deps, ok := pkg[section].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for name := range deps {
+			if strings.HasPrefix(name, "serverless-") {
+				// Has serverless plugins → assume v3 (current standard)
+				return 3
+			}
+		}
+	}
+
 	return 0
 }
 
@@ -262,11 +277,14 @@ func moveResourcePolicyToApiGateway(content string) string {
 		return content
 	}
 
-	// Extract resourcePolicy block
-	rpBlock := lines[resourcePolicyStart:resourcePolicyEnd]
+	// Extract resourcePolicy block (copy to avoid slice mutation)
+	rpBlock := make([]string, resourcePolicyEnd-resourcePolicyStart)
+	copy(rpBlock, lines[resourcePolicyStart:resourcePolicyEnd])
 
-	// Remove it from original position
-	newLines := append(lines[:resourcePolicyStart], lines[resourcePolicyEnd:]...)
+	// Remove it from original position (safe copy)
+	newLines := make([]string, 0, len(lines)-(resourcePolicyEnd-resourcePolicyStart))
+	newLines = append(newLines, lines[:resourcePolicyStart]...)
+	newLines = append(newLines, lines[resourcePolicyEnd:]...)
 
 	// Find or create apiGateway section under provider
 	apiGwIdx := -1
@@ -282,26 +300,28 @@ func moveResourcePolicyToApiGateway(content string) string {
 		}
 	}
 
-	// Re-indent resourcePolicy block to be under apiGateway
+	// Re-indent resourcePolicy block to be under apiGateway.
+	// Calculate the shift: old position was providerChildIndent, new is apiGwChildIndent.
+	// Just prepend the delta to every line to preserve relative indentation.
+	oldIndent := providerChildIndent // where resourcePolicy: was
+	newIndent := apiGwChildIndent    // where it should go
+	delta := newIndent - oldIndent
+
 	var reindented []string
-	for idx, line := range rpBlock {
-		if idx == 0 {
-			// The "resourcePolicy:" line itself
-			reindented = append(reindented, strings.Repeat(" ", apiGwChildIndent)+"resourcePolicy:")
+	for _, line := range rpBlock {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			reindented = append(reindented, "")
+		} else if delta >= 0 {
+			reindented = append(reindented, strings.Repeat(" ", delta)+line)
 		} else {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				reindented = append(reindented, "")
-			} else {
-				// Original was at providerChildIndent+2, new is apiGwChildIndent+2
-				oldBase := providerChildIndent + 2
-				lineIndent := len(line) - len(strings.TrimLeft(line, " "))
-				extra := lineIndent - oldBase
-				if extra < 0 {
-					extra = 0
-				}
-				reindented = append(reindented, strings.Repeat(" ", apiGwChildIndent+2+extra)+trimmed)
+			// Negative delta: remove leading spaces (shouldn't happen normally)
+			lineIndent := len(line) - len(strings.TrimLeft(line, " "))
+			newLineIndent := lineIndent + delta
+			if newLineIndent < 0 {
+				newLineIndent = 0
 			}
+			reindented = append(reindented, strings.Repeat(" ", newLineIndent)+trimmed)
 		}
 	}
 
@@ -321,7 +341,10 @@ func moveResourcePolicyToApiGateway(content string) string {
 		}
 		apiGwLine := strings.Repeat(" ", providerChildIndent) + "apiGateway:"
 		insertion := append([]string{apiGwLine}, reindented...)
-		result := append(newLines[:insertAt], append(insertion, newLines[insertAt:]...)...)
+		result := make([]string, 0, len(newLines)+len(insertion))
+		result = append(result, newLines[:insertAt]...)
+		result = append(result, insertion...)
+		result = append(result, newLines[insertAt:]...)
 		return strings.Join(result, "\n")
 	}
 
@@ -339,7 +362,10 @@ func moveResourcePolicyToApiGateway(content string) string {
 		insertAt = i + 1
 	}
 
-	result := append(newLines[:insertAt], append(reindented, newLines[insertAt:]...)...)
+	result := make([]string, 0, len(newLines)+len(reindented))
+	result = append(result, newLines[:insertAt]...)
+	result = append(result, reindented...)
+	result = append(result, newLines[insertAt:]...)
 	return strings.Join(result, "\n")
 }
 
