@@ -335,9 +335,9 @@ Use --dry-run to preview changes without pushing.`,
 			if canPR {
 				// Do not push/PR if tests are failing
 				if !vResult.TestsOk {
-					fmt.Println("\n  [SKIP] Tests failed — not creating/updating PR.")
+					fmt.Println("\n  [FAIL] Tests failed — not creating/updating PR.")
 					printReport(owner+"/"+repo, configs, issues, filesChanged, target)
-					return nil
+					return fmt.Errorf("tests failed: upgrade aborted")
 				}
 
 				if err := gh.CommitAndPush(repoPath, filesChanged, branch); err != nil {
