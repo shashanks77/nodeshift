@@ -232,6 +232,49 @@ func fixJestConfigJs(repoPath string) []string {
 		}
 	}
 
+	// Add dummy AWS credentials to process.env to prevent CredentialsProviderError in tests
+	if !strings.Contains(content, "AWS_ACCESS_KEY_ID") {
+		if strings.Contains(content, "process.env") {
+			// Append AWS env vars after the last existing process.env line
+			lines := strings.Split(content, "\n")
+			var newLines []string
+			inserted := false
+			for i, line := range lines {
+				newLines = append(newLines, line)
+				if !inserted && strings.Contains(line, "process.env") {
+					// Find the last consecutive process.env line
+					isLast := true
+					if i+1 < len(lines) && strings.Contains(lines[i+1], "process.env") {
+						isLast = false
+					}
+					if isLast {
+						newLines = append(newLines,
+							"process.env.AWS_ACCESS_KEY_ID = 'test';",
+							"process.env.AWS_SECRET_ACCESS_KEY = 'test';",
+							"process.env.AWS_REGION = 'us-east-1';",
+						)
+						inserted = true
+					}
+				}
+			}
+			if inserted {
+				content = strings.Join(newLines, "\n")
+				modified = true
+			}
+		} else {
+			// No process.env block exists; add one before module.exports
+			envBlock := "process.env.AWS_ACCESS_KEY_ID = 'test';\nprocess.env.AWS_SECRET_ACCESS_KEY = 'test';\nprocess.env.AWS_REGION = 'us-east-1';\n\n"
+			exportIdx := strings.Index(content, "module.exports")
+			if exportIdx < 0 {
+				exportIdx = strings.Index(content, "export default")
+			}
+			if exportIdx > 0 {
+				content = content[:exportIdx] + envBlock + content[exportIdx:]
+				modified = true
+			}
+		}
+	}
+
 	if modified {
 		os.WriteFile(configPath, []byte(content), 0644)
 		fixed = append(fixed, "jest.config.js")
