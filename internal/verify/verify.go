@@ -169,10 +169,21 @@ func FixTestConfig(repoPath string) []string {
 		return fixed
 	}
 
+	// Ensure test script has NODE_OPTIONS=--experimental-vm-modules for AWS SDK v3 ESM compat
+	scriptFixes := fixTestScriptNodeOptions(pkgPath, pkg)
+	if len(scriptFixes) > 0 {
+		fixed = append(fixed, scriptFixes...)
+		// Re-read package.json since it was modified
+		data, _ = os.ReadFile(pkgPath)
+		json.Unmarshal(data, &pkg)
+	}
+
 	jest, ok := pkg["jest"].(map[string]interface{})
 	if !ok {
 		// Try jest.config.js instead
-		return fixJestConfigJs(repoPath)
+		jestFixes := fixJestConfigJs(repoPath)
+		fixed = append(fixed, jestFixes...)
+		return fixed
 	}
 
 	modified := false
@@ -197,6 +208,38 @@ func FixTestConfig(repoPath string) []string {
 		os.WriteFile(pkgPath, append(out, '\n'), 0644)
 		fixed = append(fixed, "package.json")
 	}
+	return fixed
+}
+
+// fixTestScriptNodeOptions ensures the package.json test script includes
+// NODE_OPTIONS=--experimental-vm-modules so that CI environments (e.g. Bamboo)
+// can run tests with AWS SDK v3 ESM packages without import errors.
+func fixTestScriptNodeOptions(pkgPath string, pkg map[string]interface{}) []string {
+	var fixed []string
+	scripts, ok := pkg["scripts"].(map[string]interface{})
+	if !ok {
+		return fixed
+	}
+
+	testScript, ok := scripts["test"].(string)
+	if !ok || testScript == "" {
+		return fixed
+	}
+
+	if strings.Contains(testScript, "--experimental-vm-modules") {
+		return fixed
+	}
+
+	// Prepend NODE_OPTIONS=--experimental-vm-modules to the test script
+	scripts["test"] = "NODE_OPTIONS=--experimental-vm-modules " + testScript
+	pkg["scripts"] = scripts
+
+	out, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return fixed
+	}
+	os.WriteFile(pkgPath, append(out, '\n'), 0644)
+	fixed = append(fixed, "package.json (test script NODE_OPTIONS)")
 	return fixed
 }
 

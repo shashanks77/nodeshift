@@ -66,8 +66,14 @@ func transformServerless(repoPath string, cfg types.DetectedNodeConfig, target i
 		return false, err
 	}
 
+	// Cap serverless runtime at nodejs20.x — AWS Lambda doesn't support newer runtimes yet
+	lambdaTarget := target
+	if lambdaTarget > 20 {
+		lambdaTarget = 20
+	}
+
 	old := "nodejs" + cfg.CurrentVersion + ".x"
-	newRuntime := "nodejs" + strconv.Itoa(target) + ".x"
+	newRuntime := "nodejs" + strconv.Itoa(lambdaTarget) + ".x"
 	content := string(data)
 
 	if !strings.Contains(content, old) {
