@@ -223,6 +223,15 @@ Use --dry-run to preview changes without pushing.`,
 			}
 			filesChanged = append(filesChanged, configChanged...)
 
+			// Phase 2b: Serverless Framework v3 compatibility fixes
+			slsChanged, err := transformer.TransformServerlessV3Compat(repoPath, target)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  [WARN] Serverless v3 compat: %v\n", err)
+			} else if len(slsChanged) > 0 {
+				fmt.Printf("  [OK] Serverless v3 compat: %v\n", slsChanged)
+				filesChanged = append(filesChanged, slsChanged...)
+			}
+
 			if len(filesChanged) == 0 {
 				fmt.Println("No files needed transformation. Skipping PR.")
 				printReport(owner+"/"+repo, configs, issues, filesChanged, target)
