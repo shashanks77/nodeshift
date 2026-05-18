@@ -1,6 +1,102 @@
 [
   {
     "url": "https://github.com/SHL-India/FOCUS-tci-focus.git",
-    "baseBranch": "develop"
+    "baseBranch": "develop",
+    "disabled": false
+  },
+  {
+    "url": "https://github.com/SHL-India/TDM-service.user.validation.git",
+    "baseBranch": "qa",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/TDM-service.user.upload.git",
+    "baseBranch": "qa",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.biodata.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.notification.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.auditing.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.package.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.user.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.users.uploader.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.tcresponse.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.insight.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.extracts.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.content.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.auth.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-focus.service.subscription.git",
+    "baseBranch": "main",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/MFS-mfs-api.git",
+    "baseBranch": "master",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/MFS-mfs-reports.git",
+    "baseBranch": "master",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/MFS-scoring-service.git",
+    "baseBranch": "master",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/TDM-lambda-hris-file-validation.git",
+    "baseBranch": "qa",
+    "disabled": true
+  },
+  {
+    "url": "https://github.com/SHL-India/FOCUS-reporting-service.git",
+    "baseBranch": "main",
+    "disabled": true
   }
 ]
