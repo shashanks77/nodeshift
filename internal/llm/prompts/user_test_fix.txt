@@ -1,0 +1,14 @@
+The following test file has failures after upgrading to Node.js %d.
+
+Test file: %s
+```
+%s
+```
+
+Failures:
+%s
+
+Source files referenced in the test:
+%s
+
+Return the complete fixed test file content.

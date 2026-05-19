@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,28 +11,6 @@ import (
 )
 
 const maxAttempts = 3
-
-const systemPrompt = `You are a TypeScript/Node.js expert fixing compilation and test errors after a Node.js version upgrade.
-
-Rules:
-- Return ONLY the fixed file content, no explanations or markdown fences
-- Preserve all existing functionality
-- Fix only the specific errors mentioned
-- Do not add new imports unless strictly needed
-- Do not change code style or formatting beyond the fix`
-
-var tscFixPrompt = "The following TypeScript file has compilation errors after upgrading to Node.js %d.\n\n" +
-	"File: %s\n" +
-	"```\n%s\n```\n\n" +
-	"Errors:\n%s\n\n" +
-	"Return the complete fixed file content."
-
-var testFixPrompt = "The following test file has failures after upgrading to Node.js %d.\n\n" +
-	"Test file: %s\n" +
-	"```\n%s\n```\n\n" +
-	"Failures:\n%s\n\n" +
-	"Source files referenced in the test:\n%s\n\n" +
-	"Return the complete fixed test file content."
 
 // FixResult tracks what was fixed and what remains.
 type FixResult struct {
@@ -74,8 +53,8 @@ func FixTscErrors(client *Client, repoPath string, target int) FixResult {
 				fmt.Fprintf(&errDesc, "Line %d, Col %d: %s %s\n", e.Line, e.Col, e.Code, e.Message)
 			}
 
-			prompt := fmt.Sprintf(tscFixPrompt, target, file, string(content), errDesc.String())
-			reply, err := client.Chat(systemPrompt, prompt)
+			prompt := fmt.Sprintf(PromptTscFix, target, file, string(content), errDesc.String())
+			reply, err := client.Chat(SystemPromptTscFix, prompt)
 			if err != nil {
 				fmt.Printf("  [LLM] Error for %s: %v\n", file, err)
 				continue
@@ -147,8 +126,8 @@ func FixTestErrors(client *Client, repoPath string, target int) FixResult {
 			// Try to read related source files
 			sourceContext := gatherSourceContext(repoPath, testFile)
 
-			prompt := fmt.Sprintf(testFixPrompt, target, testFile, string(content), errDesc.String(), sourceContext)
-			reply, err := client.Chat(systemPrompt, prompt)
+			prompt := fmt.Sprintf(PromptTestFix, target, testFile, string(content), errDesc.String(), sourceContext)
+			reply, err := client.Chat(SystemPromptTscFix, prompt)
 			if err != nil {
 				fmt.Printf("  [LLM] Error for %s: %v\n", testFile, err)
 				continue
@@ -244,4 +223,68 @@ func gatherSourceContext(repoPath, testFile string) string {
 	}
 
 	return fmt.Sprintf("File: %s\n```\n%s\n```", srcFile, strings.Join(lines, "\n"))
+}
+
+// FixVulnerabilities uses the LLM to upgrade vulnerable dependency versions in package.json.
+func FixVulnerabilities(client *Client, repoPath string, vulns []verify.Vulnerability) FixResult {
+	result := FixResult{}
+
+	pkgPath := filepath.Join(repoPath, "package.json")
+	content, err := os.ReadFile(pkgPath)
+	if err != nil {
+		fmt.Printf("  [LLM] Cannot read package.json: %v\n", err)
+		return result
+	}
+
+	// Build vulnerability description
+	var vulnDesc strings.Builder
+	for _, v := range vulns {
+		direct := ""
+		if v.IsDirect {
+			direct = " (direct dependency)"
+		}
+		fmt.Fprintf(&vulnDesc, "- %s [%s]: %s%s\n", v.Name, v.Severity, v.Title, direct)
+		if v.URL != "" {
+			fmt.Fprintf(&vulnDesc, "  Advisory: %s\n", v.URL)
+		}
+	}
+
+	prompt := fmt.Sprintf(PromptVulnFix, string(content), vulnDesc.String())
+
+	reply, err := client.Chat(SystemPromptVulnFix, prompt)
+	if err != nil {
+		fmt.Printf("  [LLM] Error: %v\n", err)
+		return result
+	}
+
+	fixed := cleanCodeResponse(reply)
+	if fixed == "" || fixed == string(content) {
+		return result
+	}
+
+	// Validate it's still valid JSON
+	var js map[string]interface{}
+	if err := json.Unmarshal([]byte(fixed), &js); err != nil {
+		fmt.Printf("  [LLM] Invalid JSON returned, skipping\n")
+		return result
+	}
+
+	if err := os.WriteFile(pkgPath, []byte(fixed), 0644); err != nil {
+		fmt.Printf("  [LLM] Failed to write package.json: %v\n", err)
+		return result
+	}
+
+	// Run npm install to update lockfile
+	npmOk, npmErr := verify.RunNpmInstall(repoPath)
+	if !npmOk {
+		fmt.Printf("  [LLM] npm install failed after package.json update: %s\n", npmErr)
+		// Revert
+		os.WriteFile(pkgPath, content, 0644)
+		verify.RunNpmInstall(repoPath)
+		return result
+	}
+
+	result.FilesFixed = append(result.FilesFixed, "package.json", "package-lock.json")
+	result.AttemptsMade = 1
+	return result
 }

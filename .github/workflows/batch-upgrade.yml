@@ -14,6 +14,13 @@ on:
         description: 'Dry run (no PRs created)'
         type: boolean
         default: false
+      llm_enabled:
+        description: 'Enable LLM-assisted fixes during upgrade'
+        type: boolean
+        default: true
+      llm_model:
+        description: 'Ollama model to use for LLM fixes'
+        default: 'qwen2.5-coder:7b'
 
 jobs:
   # Read repos.json and create a matrix entry per repo
@@ -79,17 +86,38 @@ jobs:
           git config --global user.name "nodeshift[bot]"
           git config --global user.email "nodeshift-bot@users.noreply.github.com"
 
+      - name: Install and start Ollama
+        if: ${{ github.event.inputs.llm_enabled != 'false' }}
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          MODEL="${{ github.event.inputs.llm_model || 'qwen2.5-coder:7b' }}"
+          ollama serve &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "Ollama is ready"
+              break
+            fi
+            sleep 1
+          done
+          ollama pull "$MODEL"
+
       - name: "Upgrade ${{ matrix.name }}"
         env:
           GITHUB_TOKEN: ${{ secrets.NODESHIFT_PAT }}
         run: |
           TARGET="${{ github.event.inputs.target || '24' }}"
           DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          LLM_ENABLED="${{ github.event.inputs.llm_enabled || 'true' }}"
+          MODEL="${{ github.event.inputs.llm_model || 'qwen2.5-coder:7b' }}"
 
           ARGS="upgrade ${{ matrix.url }} --target $TARGET --base ${{ matrix.baseBranch }} --codemods --engine-dir ./codemod-engine"
 
           if [ "$DRY_RUN" = "true" ]; then
             ARGS="$ARGS --dry-run"
+          fi
+
+          if [ "$LLM_ENABLED" = "true" ]; then
+            ARGS="$ARGS --llm-url http://localhost:11434 --llm-model $MODEL"
           fi
 
           ./bin/nodeshift $ARGS
