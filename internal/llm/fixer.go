@@ -103,6 +103,11 @@ func FixTestErrors(client *Client, repoPath string, target int) FixResult {
 		// Deduplicate by test file
 		seen := map[string]bool{}
 		for _, e := range errors {
+			// Skip errors originating from node_modules (dependency issues, not test code bugs)
+			if strings.Contains(e.Error, "node_modules/") {
+				fmt.Printf("  [LLM] Skipping test error from dependency: %s\n", e.TestSuite)
+				continue
+			}
 			testFile := guessTestFile(repoPath, e)
 			if testFile == "" || seen[testFile] {
 				continue
@@ -226,8 +231,21 @@ func gatherSourceContext(repoPath, testFile string) string {
 }
 
 // FixVulnerabilities uses the LLM to upgrade vulnerable dependency versions in package.json.
+// Only sends direct dependencies with critical/high severity to keep the prompt small and focused.
 func FixVulnerabilities(client *Client, repoPath string, vulns []verify.Vulnerability) FixResult {
 	result := FixResult{}
+
+	// Filter to only direct deps with critical/high severity (actionable by version bump)
+	var actionable []verify.Vulnerability
+	for _, v := range vulns {
+		if v.IsDirect && (v.Severity == "critical" || v.Severity == "high") {
+			actionable = append(actionable, v)
+		}
+	}
+	if len(actionable) == 0 {
+		fmt.Println("  [LLM] No direct critical/high vulnerabilities to fix")
+		return result
+	}
 
 	pkgPath := filepath.Join(repoPath, "package.json")
 	content, err := os.ReadFile(pkgPath)
@@ -236,18 +254,15 @@ func FixVulnerabilities(client *Client, repoPath string, vulns []verify.Vulnerab
 		return result
 	}
 
-	// Build vulnerability description
+	// Build vulnerability description (only actionable ones)
 	var vulnDesc strings.Builder
-	for _, v := range vulns {
-		direct := ""
-		if v.IsDirect {
-			direct = " (direct dependency)"
-		}
-		fmt.Fprintf(&vulnDesc, "- %s [%s]: %s%s\n", v.Name, v.Severity, v.Title, direct)
+	for _, v := range actionable {
+		fmt.Fprintf(&vulnDesc, "- %s [%s]: %s (direct dependency)\n", v.Name, v.Severity, v.Title)
 		if v.URL != "" {
 			fmt.Fprintf(&vulnDesc, "  Advisory: %s\n", v.URL)
 		}
 	}
+	fmt.Printf("  [LLM] Sending %d direct critical/high vulnerabilities to LLM\n", len(actionable))
 
 	prompt := fmt.Sprintf(PromptVulnFix, string(content), vulnDesc.String())
 

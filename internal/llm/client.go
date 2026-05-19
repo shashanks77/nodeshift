@@ -42,7 +42,7 @@ func NewClient(baseURL, model string) *Client {
 		BaseURL: baseURL,
 		Model:   model,
 		client: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 300 * time.Second,
 		},
 	}
 }

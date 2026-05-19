@@ -55,6 +55,11 @@ var outdatedPackages = map[string]struct {
 }{
 	"nodemon":            {MinMajor: 3, Reason: "nodemon 2.x has compatibility issues with Node 20+. Upgrade to 3.x.", SuggestedVer: "^3.1.0"},
 	"serverless-offline": {MinMajor: 14, Reason: "serverless-offline <14 incompatible with Serverless v3+ and Node 20+.", SuggestedVer: "^14.0.0"},
+	"@nestjs/config":     {MinMajor: 3, Reason: "@nestjs/config <3.x uses util.isObject() removed in Node 18+. Causes TypeError at runtime.", SuggestedVer: "^3.2.0"},
+	"@nestjs/core":       {MinMajor: 10, Reason: "@nestjs/core <10.x has compatibility issues with Node 20+. Upgrade to 10.x+.", SuggestedVer: "^10.3.0"},
+	"@nestjs/common":     {MinMajor: 10, Reason: "@nestjs/common <10.x has compatibility issues with Node 20+. Upgrade to 10.x+.", SuggestedVer: "^10.3.0"},
+	"@nestjs/typeorm":    {MinMajor: 10, Reason: "@nestjs/typeorm <10.x has compatibility issues with Node 20+. Upgrade to 10.x+.", SuggestedVer: "^10.0.0"},
+	"@nestjs/swagger":    {MinMajor: 7, Reason: "@nestjs/swagger <7.x has compatibility issues with Node 20+. Upgrade to 7.x+.", SuggestedVer: "^7.3.0"},
 }
 
 func Analyze(repoPath string, targetVersion int) ([]types.DependencyIssue, error) {

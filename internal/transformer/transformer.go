@@ -358,6 +358,19 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 			delete(deps, "serverless-pseudo-parameters")
 			delete(devDeps, "serverless-pseudo-parameters")
 			modified = true
+
+		default:
+			// Handle outdated packages with SuggestedVersion (e.g. NestJS packages)
+			if issue.SuggestedVersion != "" && issue.Issue == "outdated" {
+				if _, ok := deps[issue.Name]; ok {
+					deps[issue.Name] = issue.SuggestedVersion
+					modified = true
+				}
+				if _, ok := devDeps[issue.Name]; ok {
+					devDeps[issue.Name] = issue.SuggestedVersion
+					modified = true
+				}
+			}
 		}
 	}
 
