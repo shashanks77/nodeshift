@@ -44,12 +44,6 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install codemod engine
-        run: |
-          cd codemod-engine
-          npm ci
-          npx tsc
-
       - name: Configure git identity
         run: |
           git config --global user.name "nodeshift[bot]"
@@ -86,7 +80,7 @@ jobs:
           LLM_ENABLED="${{ github.event.inputs.llm_enabled || 'true' }}"
           MODEL="${{ github.event.inputs.llm_model || 'qwen2.5-coder:7b' }}"
 
-          ARGS="batch --file repos.json --target $TARGET --codemods --engine-dir ./codemod-engine"
+          ARGS="batch --file repos.json --target $TARGET"
 
           if [ "$DRY_RUN" = "true" ]; then
             ARGS="$ARGS --dry-run"

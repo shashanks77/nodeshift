@@ -13,7 +13,6 @@ import (
 
 	types "github.com/your-org/nodeshift/internal"
 	"github.com/your-org/nodeshift/internal/analyzer"
-	"github.com/your-org/nodeshift/internal/codemod"
 	"github.com/your-org/nodeshift/internal/detector"
 	ghclient "github.com/your-org/nodeshift/internal/github"
 	"github.com/your-org/nodeshift/internal/llm"
@@ -96,8 +95,6 @@ func upgradeCmd() *cobra.Command {
 		baseBranch string
 		token      string
 		dryRun     bool
-		codemods   bool
-		engineDir  string
 		llmURL     string
 		llmModel   string
 	)
@@ -195,38 +192,16 @@ Use --dry-run to preview changes without pushing.`,
 				}
 			}
 
-			// Phase 1: AST codemods (TypeScript engine for code-level changes)
-			// Must run BEFORE package.json changes so shouldRun() still sees aws-sdk
 			var filesChanged []string
-			var codemodsApplied []string
-			if codemods {
-				engine := codemod.NewEngine(engineDir)
-				resp, cErr := engine.Run(repoPath, target, nil)
-				if cErr != nil {
-					fmt.Fprintf(os.Stderr, "Codemod engine error: %v\n", cErr)
-				} else {
-					for _, r := range resp.Results {
-						if r.Success {
-							fmt.Printf("  [OK] Codemod %s: %d files modified\n", r.Name, len(r.FilesModified))
-							if len(r.FilesModified) > 0 {
-								codemodsApplied = append(codemodsApplied, r.Name)
-							}
-						} else {
-							fmt.Printf("  [FAIL] Codemod %s: %s\n", r.Name, r.Error)
-						}
-					}
-					filesChanged = append(filesChanged, resp.TotalFilesModified...)
-				}
-			}
 
-			// Phase 2: Config transforms + package.json upgrades (Go)
+			// Phase 1: Config transforms + package.json upgrades
 			configChanged, err := transformer.Transform(repoPath, configs, target, issues)
 			if err != nil {
 				return err
 			}
 			filesChanged = append(filesChanged, configChanged...)
 
-			// Phase 2b: Serverless Framework v3 compatibility fixes
+			// Phase 1b: Serverless Framework v3 compatibility fixes
 			slsChanged, err := transformer.TransformServerlessV3Compat(repoPath, target)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  [WARN] Serverless v3 compat: %v\n", err)
@@ -235,7 +210,7 @@ Use --dry-run to preview changes without pushing.`,
 				filesChanged = append(filesChanged, slsChanged...)
 			}
 
-			// Phase 2c: LLM-powered API migration for upgraded dependencies
+			// Phase 2: LLM-powered API migration for upgraded dependencies
 			if llmURL != "" && len(issues) > 0 {
 				llmClient := llm.NewClient(llmURL, llmModel)
 				if err := llmClient.Ping(); err != nil {
@@ -436,7 +411,6 @@ Use --dry-run to preview changes without pushing.`,
 					DetectedConfigs:  configs,
 					DependencyIssues: issues,
 					FilesChanged:     filesChanged,
-					CodemodsApplied:  codemodsApplied,
 				}
 				prURL, err := gh.CreatePR(report, branch)
 				if err != nil {
@@ -459,8 +433,6 @@ Use --dry-run to preview changes without pushing.`,
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Base branch for PR")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().BoolVar(&codemods, "codemods", false, "Run AST codemods (requires Node.js)")
-	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
 	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (enables LLM fix during upgrade)")
 	cmd.Flags().StringVar(&llmModel, "llm-model", "qwen2.5-coder:7b", "LLM model name")
 
@@ -473,8 +445,6 @@ func batchCmd() *cobra.Command {
 		baseBranch string
 		token      string
 		dryRun     bool
-		codemods   bool
-		engineDir  string
 		reposFile  string
 		llmURL     string
 		llmModel   string
@@ -541,7 +511,7 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 				fmt.Printf("━━━ [%d/%d] %s (base: %s) ━━━\n", i+1, len(repos), repoLabel, base)
 				start := time.Now()
 
-				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, codemods, engineDir, llmURL, llmModel)
+				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, llmURL, llmModel)
 				result.Repo = repoLabel
 
 				elapsed := time.Since(start).Round(time.Second)
@@ -575,8 +545,6 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Default base branch (overridden per-repo)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().BoolVar(&codemods, "codemods", true, "Run AST codemods (disable with --codemods=false)")
-	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
 	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (enables LLM fix during upgrade)")
 	cmd.Flags().StringVar(&llmModel, "llm-model", "qwen2.5-coder:7b", "LLM model name")
 
@@ -584,7 +552,7 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 }
 
 // processSingleRepo runs the full upgrade pipeline on one repo and returns a result.
-func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun, codemods bool, engineDir, llmURL, llmModel string) types.BatchResult {
+func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun bool, llmURL, llmModel string) types.BatchResult {
 	gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 
 	repoPath, err := gh.Clone()
@@ -607,37 +575,15 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		return types.BatchResult{Status: "error", Error: fmt.Sprintf("branch: %v", err)}
 	}
 
-	// Phase 1: AST codemods
+	// Phase 1: Config transforms + package.json upgrades
 	var filesChanged []string
-	var codemodsApplied []string
-	if codemods {
-		engine := codemod.NewEngine(engineDir)
-		resp, cErr := engine.Run(repoPath, target, nil)
-		if cErr != nil {
-			fmt.Fprintf(os.Stderr, "  Codemod engine error: %v\n", cErr)
-		} else {
-			for _, r := range resp.Results {
-				if r.Success {
-					fmt.Printf("  [OK] Codemod %s: %d files modified\n", r.Name, len(r.FilesModified))
-					if len(r.FilesModified) > 0 {
-						codemodsApplied = append(codemodsApplied, r.Name)
-					}
-				} else {
-					fmt.Printf("  [FAIL] Codemod %s: %s\n", r.Name, r.Error)
-				}
-			}
-			filesChanged = append(filesChanged, resp.TotalFilesModified...)
-		}
-	}
-
-	// Phase 2: Config transforms + package.json upgrades
 	configChanged, err := transformer.Transform(repoPath, configs, target, issues)
 	if err != nil {
 		return types.BatchResult{Status: "error", Error: fmt.Sprintf("transform: %v", err)}
 	}
 	filesChanged = append(filesChanged, configChanged...)
 
-	// Phase 2c: LLM-powered API migration for upgraded dependencies
+	// Phase 2: LLM-powered API migration for upgraded dependencies
 	if llmURL != "" && len(issues) > 0 {
 		llmClient := llm.NewClient(llmURL, llmModel)
 		if err := llmClient.Ping(); err != nil {
@@ -749,7 +695,6 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		DetectedConfigs:  configs,
 		DependencyIssues: issues,
 		FilesChanged:     filesChanged,
-		CodemodsApplied:  codemodsApplied,
 	}
 
 	prURL, err := gh.CreatePR(report, branch)

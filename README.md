@@ -1,6 +1,6 @@
 # Nodeshift
 
-Automated Node.js version upgrade agent. Scans repositories for Node version configs, detects dependency compatibility issues, applies AST-level codemods, and verifies the upgrade with npm install, TypeScript compilation, tests, and vulnerability scanning.
+Automated Node.js version upgrade agent. Scans repositories for Node version configs, detects dependency compatibility issues, applies LLM-powered API migrations, and verifies the upgrade with npm install, TypeScript compilation, tests, and vulnerability scanning.
 
 ## Architecture
 
@@ -12,16 +12,11 @@ nodeshift/
 ├── internal/
 │   ├── types.go              # Shared types
 │   ├── analyzer/             # Dependency compatibility analysis
-│   ├── codemod/              # Bridge to TypeScript codemod engine
 │   ├── detector/             # Node version config detection
 │   ├── github/               # GitHub API client (clone, branch, PR)
+│   ├── llm/                  # LLM client (Ollama) - codemod, fixer, audit
 │   ├── transformer/          # Config file transforms
 │   └── verify/               # Post-upgrade verification + auto-fix + audit
-├── codemod-engine/           # TypeScript AST codemods (ts-morph)
-│   └── src/codemods/
-│       ├── aws-sdk-v3.ts     # AWS SDK v2 → v3 migration
-│       ├── xml2json.ts       # xml2json → fast-xml-parser
-│       └── uuid.ts           # uuid sub-path → named exports
 ├── .env                      # GitHub token (gitignored)
 ├── .env.example              # Template for .env
 ├── Makefile

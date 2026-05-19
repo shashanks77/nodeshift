@@ -160,8 +160,8 @@ func (c *Client) generatePRBody(report types.UpgradeReport) string {
 	}
 
 	if len(report.DependencyIssues) > 0 {
-		// Build a set of packages fixed by codemods/transformer
-		fixedInfo := buildFixedSet(report.CodemodsApplied)
+		// Build a set of packages fixed by transformer
+		fixedInfo := buildFixedSet()
 
 		b.WriteString("\n### Dependency Issues\n\n| Package | Severity | Issue | Action Taken | Status |\n|---------|----------|-------|--------------|--------|\n")
 		for _, issue := range report.DependencyIssues {
@@ -183,40 +183,13 @@ func (c *Client) generatePRBody(report types.UpgradeReport) string {
 }
 
 // buildFixedSet returns a map of package name → description of what was done.
-func buildFixedSet(codemodsApplied []string) map[string]string {
-	// Maps codemod name → { package → replacement description }
-	codemodReplacements := map[string]map[string]string{
-		"aws-sdk-v3": {
-			"aws-sdk": "Replaced with `@aws-sdk/*` v3 modular clients",
-		},
-		"xml2json": {
-			"xml2json":           "Replaced with `fast-xml-parser` ^4.3.0",
-			"xml-to-json-stream": "Replaced with `fast-xml-parser` ^4.3.0",
-		},
-		"uuid": {
-			"uuid": "Updated to ES module import",
-		},
-	}
-
+func buildFixedSet() map[string]string {
 	// Packages upgraded by the Go transformer (version bumps in package.json)
-	transformerReplacements := map[string]string{
+	return map[string]string{
 		"typescript":  "Upgraded to `^5.4.0`",
 		"jest":        "Upgraded to `^29.7.0`",
 		"@types/node": "Upgraded to match target Node version",
 		"@types/jest": "Upgraded to `^29.5.0`",
 		"ts-jest":     "Upgraded to `^29.1.0`",
 	}
-
-	fixed := make(map[string]string)
-	for _, cm := range codemodsApplied {
-		if replacements, ok := codemodReplacements[cm]; ok {
-			for pkg, desc := range replacements {
-				fixed[pkg] = desc
-			}
-		}
-	}
-	for pkg, desc := range transformerReplacements {
-		fixed[pkg] = desc
-	}
-	return fixed
 }
