@@ -23,40 +23,9 @@ on:
         default: 'qwen2.5-coder:7b'
 
 jobs:
-  # Read repos.json and create a matrix entry per repo
-  prepare:
+  batch-upgrade:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Checkout nodeshift
-        uses: actions/checkout@v4
-
-      - name: Build repo matrix
-        id: set-matrix
-        run: |
-          MATRIX=$(python3 -c "
-          import json
-          with open('repos.json') as f:
-              repos = json.load(f)
-          repos = [r for r in repos if not r.get('disabled', False)]
-          for r in repos:
-              parts = r['url'].replace('.git','').split('/')
-              r['name'] = f\"{parts[-2]}/{parts[-1]}\"
-          print(json.dumps({'include': repos}))
-          ")
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
-  # Each repo runs as a separate parallel job
-  upgrade:
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-
-    name: "upgrade: ${{ matrix.name }}"
+    timeout-minutes: 120
 
     steps:
       - name: Checkout nodeshift
@@ -86,6 +55,13 @@ jobs:
           git config --global user.name "nodeshift[bot]"
           git config --global user.email "nodeshift-bot@users.noreply.github.com"
 
+      - name: Cache Ollama model
+        if: ${{ github.event.inputs.llm_enabled != 'false' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ github.event.inputs.llm_model || 'qwen2.5-coder:7b' }}
+
       - name: Install and start Ollama
         if: ${{ github.event.inputs.llm_enabled != 'false' }}
         run: |
@@ -101,7 +77,7 @@ jobs:
           done
           ollama pull "$MODEL"
 
-      - name: "Upgrade ${{ matrix.name }}"
+      - name: Run batch upgrade
         env:
           GITHUB_TOKEN: ${{ secrets.NODESHIFT_PAT }}
         run: |
@@ -110,7 +86,7 @@ jobs:
           LLM_ENABLED="${{ github.event.inputs.llm_enabled || 'true' }}"
           MODEL="${{ github.event.inputs.llm_model || 'qwen2.5-coder:7b' }}"
 
-          ARGS="upgrade ${{ matrix.url }} --target $TARGET --base ${{ matrix.baseBranch }} --codemods --engine-dir ./codemod-engine"
+          ARGS="batch --file repos.json --target $TARGET --codemods --engine-dir ./codemod-engine"
 
           if [ "$DRY_RUN" = "true" ]; then
             ARGS="$ARGS --dry-run"
