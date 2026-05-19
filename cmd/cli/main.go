@@ -235,6 +235,20 @@ Use --dry-run to preview changes without pushing.`,
 				filesChanged = append(filesChanged, slsChanged...)
 			}
 
+			// Phase 2c: LLM-powered API migration for upgraded dependencies
+			if llmURL != "" && len(issues) > 0 {
+				llmClient := llm.NewClient(llmURL, llmModel)
+				if err := llmClient.Ping(); err != nil {
+					fmt.Printf("  [LLM-CODEMOD] Cannot reach LLM: %v\n", err)
+				} else {
+					codemodResult := llm.FixDeprecatedAPIs(llmClient, repoPath, target, issues)
+					if len(codemodResult.FilesFixed) > 0 {
+						fmt.Printf("  [OK] LLM codemod: migrated %d file(s)\n", len(codemodResult.FilesFixed))
+						filesChanged = append(filesChanged, codemodResult.FilesFixed...)
+					}
+				}
+			}
+
 			if len(filesChanged) == 0 {
 				fmt.Println("No files needed transformation. Skipping PR.")
 				printReport(owner+"/"+repo, configs, issues, filesChanged, target)
@@ -622,6 +636,20 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		return types.BatchResult{Status: "error", Error: fmt.Sprintf("transform: %v", err)}
 	}
 	filesChanged = append(filesChanged, configChanged...)
+
+	// Phase 2c: LLM-powered API migration for upgraded dependencies
+	if llmURL != "" && len(issues) > 0 {
+		llmClient := llm.NewClient(llmURL, llmModel)
+		if err := llmClient.Ping(); err != nil {
+			fmt.Printf("  [LLM-CODEMOD] Cannot reach LLM: %v\n", err)
+		} else {
+			codemodResult := llm.FixDeprecatedAPIs(llmClient, repoPath, target, issues)
+			if len(codemodResult.FilesFixed) > 0 {
+				fmt.Printf("  [OK] LLM codemod: migrated %d file(s)\n", len(codemodResult.FilesFixed))
+				filesChanged = append(filesChanged, codemodResult.FilesFixed...)
+			}
+		}
+	}
 
 	if len(filesChanged) == 0 {
 		return types.BatchResult{Status: "up-to-date"}

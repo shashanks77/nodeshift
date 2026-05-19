@@ -16,3 +16,9 @@ var PromptTestFix string
 
 //go:embed prompts/user_vuln_fix.txt
 var PromptVulnFix string
+
+//go:embed prompts/system_codemod.txt
+var SystemPromptCodemod string
+
+//go:embed prompts/user_codemod.txt
+var PromptCodemod string
