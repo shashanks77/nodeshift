@@ -198,23 +198,32 @@ func FixTestConfig(repoPath string) []string {
 	modified := false
 
 	if _, exists := jest["moduleDirectories"]; !exists {
-		jest["moduleDirectories"] = []string{"node_modules", "<rootDir>"}
 		modified = true
 	}
 
-	// Add transformIgnorePatterns for @aws-sdk and @smithy ESM packages
 	if _, exists := jest["transformIgnorePatterns"]; !exists {
-		jest["transformIgnorePatterns"] = []string{"node_modules/(?!(@aws-sdk|@smithy)/)"}
 		modified = true
 	}
 
 	if modified {
-		pkg["jest"] = jest
-		out, err := json.MarshalIndent(pkg, "", "  ")
+		// Text-based insertion into jest section to preserve key ordering
+		data, err := os.ReadFile(pkgPath)
 		if err != nil {
 			return fixed
 		}
-		os.WriteFile(pkgPath, append(out, '\n'), 0644)
+		content := string(data)
+
+		// Find the "jest" section and insert missing fields
+		if _, exists := jest["moduleDirectories"]; !exists {
+			reJest := regexp.MustCompile(`("jest"\s*:\s*\{)`)
+			content = reJest.ReplaceAllString(content, "${1}\n    \"moduleDirectories\": [\"node_modules\", \"<rootDir>\"],")
+		}
+		if _, exists := jest["transformIgnorePatterns"]; !exists {
+			reJest := regexp.MustCompile(`("jest"\s*:\s*\{)`)
+			content = reJest.ReplaceAllString(content, "${1}\n    \"transformIgnorePatterns\": [\"node_modules/(?!(@aws-sdk|@smithy)/)\"],")
+		}
+
+		os.WriteFile(pkgPath, []byte(content), 0644)
 		fixed = append(fixed, "package.json")
 	}
 	return fixed
@@ -239,16 +248,19 @@ func fixTestScriptNodeOptions(pkgPath string, pkg map[string]interface{}) []stri
 		return fixed
 	}
 
-	// Prepend NODE_OPTIONS=--experimental-vm-modules to the test script
-	scripts["test"] = "NODE_OPTIONS=--experimental-vm-modules " + testScript
-	pkg["scripts"] = scripts
-
-	out, err := json.MarshalIndent(pkg, "", "  ")
+	// Text-based replacement to preserve key ordering
+	data, err := os.ReadFile(pkgPath)
 	if err != nil {
 		return fixed
 	}
-	os.WriteFile(pkgPath, append(out, '\n'), 0644)
-	fixed = append(fixed, "package.json")
+	content := string(data)
+	newTestScript := "NODE_OPTIONS=--experimental-vm-modules " + testScript
+	re := regexp.MustCompile(`("test"\s*:\s*)"` + regexp.QuoteMeta(testScript) + `"`)
+	updated := re.ReplaceAllString(content, `${1}"`+strings.ReplaceAll(newTestScript, `$`, `$$`)+`"`)
+	if updated != content {
+		os.WriteFile(pkgPath, []byte(updated), 0644)
+		fixed = append(fixed, "package.json")
+	}
 	return fixed
 }
 
