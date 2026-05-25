@@ -36,6 +36,23 @@ func Transform(repoPath string, configs []types.DetectedNodeConfig, targetVersio
 		}
 	}
 
+	// Fix tsconfig.json extends and compilerOptions for Node upgrade
+	if ok, err := TransformTsconfigExtends(repoPath, targetVersion); err != nil {
+		return changed, fmt.Errorf("transform tsconfig.json: %w", err)
+	} else if ok {
+		// Only add if not already in changed list
+		hasTsconfig := false
+		for _, f := range changed {
+			if f == "tsconfig.json" {
+				hasTsconfig = true
+				break
+			}
+		}
+		if !hasTsconfig {
+			changed = append(changed, "tsconfig.json")
+		}
+	}
+
 	return changed, nil
 }
 
@@ -184,6 +201,48 @@ func transformTsconfigTarget(repoPath string, cfg types.DetectedNodeConfig, targ
 		return false, nil
 	}
 	return true, os.WriteFile(fullPath, []byte(updated), 0644)
+}
+
+// TransformTsconfigExtends fixes tsconfig.json "extends" field to reference the correct
+// @tsconfig/nodeXX package, and ensures essential compilerOptions are set.
+func TransformTsconfigExtends(repoPath string, target int) (bool, error) {
+	tscPath := filepath.Join(repoPath, "tsconfig.json")
+	data, err := os.ReadFile(tscPath)
+	if err != nil {
+		return false, nil // no tsconfig.json
+	}
+
+	content := string(data)
+	modified := false
+
+	// Fix extends: @tsconfig/nodeXX → @tsconfig/node{target}
+	reExtends := regexp.MustCompile(`("extends"\s*:\s*)"@tsconfig/node\d+"`)
+	newExtends := fmt.Sprintf(`${1}"@tsconfig/node%d"`, target)
+	updated := reExtends.ReplaceAllString(content, newExtends)
+	if updated != content {
+		content = updated
+		modified = true
+	}
+
+	// Ensure esModuleInterop is set
+	if !strings.Contains(content, "esModuleInterop") {
+		reOpts := regexp.MustCompile(`("compilerOptions"\s*:\s*\{)`)
+		content = reOpts.ReplaceAllString(content, "${1}\n    \"esModuleInterop\": true,")
+		modified = true
+	}
+
+	// Ensure skipLibCheck is set (avoids node_modules type errors)
+	if !strings.Contains(content, "skipLibCheck") {
+		reOpts := regexp.MustCompile(`("compilerOptions"\s*:\s*\{)`)
+		content = reOpts.ReplaceAllString(content, "${1}\n    \"skipLibCheck\": true,")
+		modified = true
+	}
+
+	if !modified {
+		return false, nil
+	}
+
+	return true, os.WriteFile(tscPath, []byte(content), 0644)
 }
 
 func transformServerlessPseudoParams(repoPath string, cfg types.DetectedNodeConfig) (bool, error) {

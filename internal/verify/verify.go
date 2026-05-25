@@ -248,7 +248,7 @@ func fixTestScriptNodeOptions(pkgPath string, pkg map[string]interface{}) []stri
 		return fixed
 	}
 	os.WriteFile(pkgPath, append(out, '\n'), 0644)
-	fixed = append(fixed, "package.json (test script NODE_OPTIONS)")
+	fixed = append(fixed, "package.json")
 	return fixed
 }
 

@@ -157,9 +157,8 @@ Use --dry-run to preview changes without pushing.`,
 
 			canPR := owner != "" && repo != "" && token != "" && !dryRun
 
-			gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
-
 			if !isLocal {
+				gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 				var err error
 				repoPath, err = gh.Clone()
 				if err != nil {
@@ -189,6 +188,9 @@ Use --dry-run to preview changes without pushing.`,
 				target = latest
 				fmt.Printf("  [DETECT] Latest stable: Node.js %d\n", target)
 			}
+
+			// Create GitHub client with resolved target
+			gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 
 			// Static analysis
 			issues, err := analyzer.Analyze(repoPath, target)
