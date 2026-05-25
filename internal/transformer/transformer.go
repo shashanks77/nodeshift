@@ -110,9 +110,22 @@ func transformDockerfile(repoPath string, cfg types.DetectedNodeConfig, target i
 		return false, err
 	}
 
-	re := regexp.MustCompile(`(?i)(FROM\s+node:)(\d+)`)
 	content := string(data)
-	updated := re.ReplaceAllString(content, "${1}"+strconv.Itoa(target))
+
+	// Replace node version and normalize Alpine/distro tag
+	// Matches: node:14-alpine3.12, node:20-slim, node:18, node:20-bullseye, etc.
+	re := regexp.MustCompile(`(?i)(FROM\s+node:)\d+(-alpine[\d.]*|-slim|-bullseye|-bookworm)?`)
+	updated := re.ReplaceAllStringFunc(content, func(match string) string {
+		parts := re.FindStringSubmatch(match)
+		prefix := parts[1] // "FROM node:"
+		suffix := parts[2] // "-alpine3.12" or "-slim" or ""
+
+		// Update Alpine to just "-alpine" (uses latest supported Alpine for the Node version)
+		if strings.HasPrefix(suffix, "-alpine") {
+			suffix = "-alpine"
+		}
+		return prefix + strconv.Itoa(target) + suffix
+	})
 
 	if updated == content {
 		return false, nil
