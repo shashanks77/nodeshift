@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	gh "github.com/google/go-github/v60/github"
 	"golang.org/x/oauth2"
@@ -59,7 +60,8 @@ func (c *Client) Clone() (string, error) {
 }
 
 func (c *Client) CreateBranch(repoPath string) (string, error) {
-	branch := "chore/node-" + strconv.Itoa(c.TargetVersion) + "-upgrade"
+	date := time.Now().Format("2006-01-02")
+	branch := "chore/node-" + strconv.Itoa(c.TargetVersion) + "-upgrade-" + date
 
 	cmd := exec.Command("git", "checkout", "-b", branch)
 	cmd.Dir = repoPath

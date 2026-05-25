@@ -59,6 +59,10 @@ type VerifyResult struct {
 func Verify(repoPath string, maxRetries int) VerifyResult {
 	result := VerifyResult{}
 
+	// Preserve package.json key ordering — npm install may reformat it
+	pkgPath := filepath.Join(repoPath, "package.json")
+	origPkg, _ := os.ReadFile(pkgPath)
+
 	ok, errMsg := RunNpmInstall(repoPath)
 	if !ok {
 		fixed := AutoFixPeerDeps(repoPath)
@@ -71,6 +75,11 @@ func Verify(repoPath string, maxRetries int) VerifyResult {
 	result.NpmErrors = errMsg
 	if !ok {
 		return result
+	}
+
+	// Restore original package.json to preserve key ordering
+	if len(origPkg) > 0 {
+		os.WriteFile(pkgPath, origPkg, 0644)
 	}
 
 	result.TscOk, result.TscErrors = RunTsc(repoPath)

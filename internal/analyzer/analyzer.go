@@ -171,6 +171,24 @@ func Analyze(repoPath string, targetVersion int) ([]types.DependencyIssue, error
 		}
 	}
 
+	// Check for @tsconfig/nodeXX that doesn't match target
+	reTsconfigPkg := regexp.MustCompile(`^@tsconfig/node(\d+)$`)
+	for name, ver := range allDeps {
+		if m := reTsconfigPkg.FindStringSubmatch(name); len(m) == 2 {
+			nodeVer, _ := strconv.Atoi(m[1])
+			if nodeVer < targetVersion {
+				issues = append(issues, types.DependencyIssue{
+					Name:             name,
+					CurrentVersion:   ver,
+					Issue:            "incompatible",
+					Severity:         "low",
+					Reason:           name + " should match target Node version. Replace with @tsconfig/node" + strconv.Itoa(targetVersion) + ".",
+					SuggestedVersion: "@tsconfig/node" + strconv.Itoa(targetVersion),
+				})
+			}
+		}
+	}
+
 	return issues, nil
 }
 

@@ -128,11 +128,7 @@ func transformPackageEngines(repoPath string, cfg types.DetectedNodeConfig, targ
 	engines["node"] = fmt.Sprintf(">=%d.0.0", target)
 	pkg["engines"] = engines
 
-	out, err := json.MarshalIndent(pkg, "", "  ")
-	if err != nil {
-		return false, err
-	}
-	return true, os.WriteFile(fullPath, append(out, '\n'), 0644)
+	return true, writePackageJsonPreservingOrder(fullPath, data, pkg)
 }
 
 func transformCIWorkflow(repoPath string, cfg types.DetectedNodeConfig, target int) (bool, error) {
@@ -152,13 +148,13 @@ func transformCIWorkflow(repoPath string, cfg types.DetectedNodeConfig, target i
 	return true, os.WriteFile(fullPath, []byte(updated), 0644)
 }
 
-// nodeVersionToESTarget maps Node major version to the best ES target
+// nodeVersionToESTarget maps Node major version to the best ES target.
+// TypeScript 5.x supports up to ES2022 as a named target; for newer Node
+// versions we use ESNext which enables all available ES features.
 func nodeVersionToESTarget(nodeVersion int) string {
 	switch {
-	case nodeVersion >= 24:
-		return "ES2024"
 	case nodeVersion >= 22:
-		return "ES2023"
+		return "ESNext"
 	case nodeVersion >= 20:
 		return "ES2022"
 	case nodeVersion >= 18:
@@ -360,8 +356,21 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 			modified = true
 
 		default:
-			// Handle outdated packages with SuggestedVersion (e.g. NestJS packages)
-			if issue.SuggestedVersion != "" && issue.Issue == "outdated" {
+			// Handle @tsconfig/nodeXX replacement
+			if strings.HasPrefix(issue.Name, "@tsconfig/node") && strings.HasPrefix(issue.SuggestedVersion, "@tsconfig/node") {
+				newPkg := issue.SuggestedVersion
+				if _, ok := deps[issue.Name]; ok {
+					delete(deps, issue.Name)
+					deps[newPkg] = fmt.Sprintf("^%d.0.0", target)
+					modified = true
+				}
+				if _, ok := devDeps[issue.Name]; ok {
+					delete(devDeps, issue.Name)
+					devDeps[newPkg] = fmt.Sprintf("^%d.0.0", target)
+					modified = true
+				}
+			} else if issue.SuggestedVersion != "" && issue.Issue == "outdated" {
+				// Handle outdated packages with SuggestedVersion (e.g. NestJS packages)
 				if _, ok := deps[issue.Name]; ok {
 					deps[issue.Name] = issue.SuggestedVersion
 					modified = true
@@ -390,11 +399,74 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 	pkg["dependencies"] = deps
 	pkg["devDependencies"] = devDeps
 
-	out, err := json.MarshalIndent(pkg, "", "  ")
-	if err != nil {
-		return false, err
+	// Write back preserving original key order using text-based replacement
+	return true, writePackageJsonPreservingOrder(pkgPath, data, pkg)
+}
+
+// writePackageJsonPreservingOrder writes changes to package.json while preserving
+// the original key ordering. It replaces version strings in-place using regex.
+func writePackageJsonPreservingOrder(pkgPath string, origData []byte, pkg map[string]interface{}) error {
+	content := string(origData)
+
+	// Helper to update a dependency section in-place
+	updateSection := func(sectionName string) {
+		section, ok := pkg[sectionName].(map[string]interface{})
+		if !ok {
+			return
+		}
+		for name, ver := range section {
+			verStr, ok := ver.(string)
+			if !ok {
+				continue
+			}
+			// Match "pkg-name": "any-version" and replace just the version
+			re := regexp.MustCompile(`("` + regexp.QuoteMeta(name) + `"\s*:\s*)"[^"]*"`)
+			content = re.ReplaceAllString(content, `${1}"`+verStr+`"`)
+		}
 	}
-	return true, os.WriteFile(pkgPath, append(out, '\n'), 0644)
+
+	updateSection("dependencies")
+	updateSection("devDependencies")
+
+	// Handle engines.node
+	if engines, ok := pkg["engines"].(map[string]interface{}); ok {
+		if nodeVer, ok := engines["node"].(string); ok {
+			re := regexp.MustCompile(`("node"\s*:\s*)"[^"]*"`)
+			content = re.ReplaceAllString(content, `${1}"`+nodeVer+`"`)
+		}
+	}
+
+	// Handle additions: packages that are in pkg but not in original
+	var origPkg map[string]interface{}
+	json.Unmarshal(origData, &origPkg)
+
+	for _, sectionName := range []string{"dependencies", "devDependencies"} {
+		newSection, _ := pkg[sectionName].(map[string]interface{})
+		origSection, _ := origPkg[sectionName].(map[string]interface{})
+		if origSection == nil {
+			origSection = make(map[string]interface{})
+		}
+		for name, ver := range newSection {
+			if _, exists := origSection[name]; !exists {
+				// Need to add this package — find the section and insert
+				verStr, _ := ver.(string)
+				entry := fmt.Sprintf("    \"%s\": \"%s\"", name, verStr)
+				sectionRe := regexp.MustCompile(`("` + sectionName + `"\s*:\s*\{)`)
+				content = sectionRe.ReplaceAllString(content, "${1}\n"+entry+",")
+			}
+		}
+
+		// Handle removals: packages in original but not in new
+		for name := range origSection {
+			if _, exists := newSection[name]; !exists {
+				// Remove the entire line including trailing newline
+				removeRe := regexp.MustCompile(`[ \t]*"` + regexp.QuoteMeta(name) + `"\s*:\s*"[^"]*",?\n`)
+				content = removeRe.ReplaceAllString(content, "")
+			}
+		}
+	}
+
+	return os.WriteFile(pkgPath, []byte(content), 0644)
 }
 
 // detectRequiredAwsV3Packages scans source files to determine which @aws-sdk packages are needed.

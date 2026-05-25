@@ -179,9 +179,41 @@ Use --dry-run to preview changes without pushing.`,
 				return err
 			}
 
+			// Auto-detect latest stable Node version if target is 0
+			if target == 0 {
+				fmt.Println("  [DETECT] Fetching latest stable Node.js version...")
+				latest, err := analyzer.FetchLatestStableNode()
+				if err != nil {
+					return fmt.Errorf("auto-detect node version: %w", err)
+				}
+				target = latest
+				fmt.Printf("  [DETECT] Latest stable: Node.js %d\n", target)
+			}
+
+			// Static analysis
 			issues, err := analyzer.Analyze(repoPath, target)
 			if err != nil {
 				return err
+			}
+
+			// LLM-based analysis (merges with static analysis)
+			if llmURL != "" {
+				llmClient := llm.NewClient(llmURL, llmModel)
+				if err := llmClient.Ping(); err == nil {
+					llmIssues, _ := analyzer.AnalyzeWithLLM(llmClient, repoPath, target)
+					if len(llmIssues) > 0 {
+						// Merge: add LLM issues that aren't already detected statically
+						existing := make(map[string]bool)
+						for _, i := range issues {
+							existing[i.Name] = true
+						}
+						for _, li := range llmIssues {
+							if !existing[li.Name] {
+								issues = append(issues, li)
+							}
+						}
+					}
+				}
 			}
 
 			var branch string
@@ -237,6 +269,7 @@ Use --dry-run to preview changes without pushing.`,
 				fmt.Fprintf(os.Stderr, "  [WARN] npm install failed: %s\n", vResult.NpmErrors)
 			} else {
 				fmt.Println("  [OK] npm install succeeded")
+				filesChanged = append(filesChanged, "package-lock.json")
 				if len(vResult.AutoFixed) > 0 {
 					fmt.Printf("  [FIX] Auto-fixed: %s\n", vResult.AutoFixed)
 					filesChanged = append(filesChanged, vResult.AutoFixed...)
@@ -429,7 +462,7 @@ Use --dry-run to preview changes without pushing.`,
 		},
 	}
 
-	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().IntVarP(&target, "target", "t", 0, "Target Node.js major version (0 = auto-detect latest LTS)")
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Base branch for PR")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
