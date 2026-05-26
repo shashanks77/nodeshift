@@ -55,6 +55,8 @@ var outdatedPackages = map[string]struct {
 }{
 	"nodemon":            {MinMajor: 3, Reason: "nodemon 2.x has compatibility issues with Node 20+. Upgrade to 3.x.", SuggestedVer: "^3.1.0"},
 	"serverless-offline": {MinMajor: 14, Reason: "serverless-offline <14 incompatible with Serverless v3+ and Node 20+.", SuggestedVer: "^14.0.0"},
+	"nats":               {MinMajor: 2, Reason: "nats v1.x is deprecated and unmaintained. v2.x uses a completely new API (JetStream, no callbacks).", SuggestedVer: "^2.28.0"},
+	"moleculer":          {MinMajor: 1, Reason: "moleculer 0.14.x is outdated and unmaintained. 0.15+ has Node 20+ fixes and ESM support.", SuggestedVer: "^0.15.0"},
 	"@nestjs/config":     {MinMajor: 3, Reason: "@nestjs/config <3.x uses util.isObject() removed in Node 18+. Causes TypeError at runtime.", SuggestedVer: "^3.2.0"},
 	"@nestjs/core":       {MinMajor: 10, Reason: "@nestjs/core <10.x has compatibility issues with Node 20+. Upgrade to 10.x+.", SuggestedVer: "^10.3.0"},
 	"@nestjs/common":     {MinMajor: 10, Reason: "@nestjs/common <10.x has compatibility issues with Node 20+. Upgrade to 10.x+.", SuggestedVer: "^10.3.0"},
@@ -158,7 +160,8 @@ func Analyze(repoPath string, targetVersion int) ([]types.DependencyIssue, error
 	// Check for outdated packages that need major version bumps
 	for name, info := range outdatedPackages {
 		if ver, ok := allDeps[name]; ok {
-			if major := extractMajor(ver); major > 0 && major < info.MinMajor {
+			major := extractMajor(ver)
+			if major < info.MinMajor {
 				issues = append(issues, types.DependencyIssue{
 					Name:             name,
 					CurrentVersion:   ver,
