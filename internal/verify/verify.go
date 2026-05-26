@@ -46,14 +46,16 @@ type AuditResult struct {
 }
 
 type VerifyResult struct {
-	NpmInstallOk bool        `json:"npmInstallOk"`
-	NpmErrors    string      `json:"npmErrors,omitempty"`
-	TscOk        bool        `json:"tscOk"`
-	TscErrors    []TscError  `json:"tscErrors,omitempty"`
-	TestsOk      bool        `json:"testsOk"`
-	TestErrors   []TestError `json:"testErrors,omitempty"`
-	AutoFixed    []string    `json:"autoFixed,omitempty"`
-	Audit        AuditResult `json:"audit,omitempty"`
+	NpmInstallOk bool          `json:"npmInstallOk"`
+	NpmErrors    string        `json:"npmErrors,omitempty"`
+	TscOk        bool          `json:"tscOk"`
+	TscErrors    []TscError    `json:"tscErrors,omitempty"`
+	TestsOk      bool          `json:"testsOk"`
+	TestErrors   []TestError   `json:"testErrors,omitempty"`
+	RuntimeOk    bool          `json:"runtimeOk"`
+	Runtime      RuntimeResult `json:"runtime,omitempty"`
+	AutoFixed    []string      `json:"autoFixed,omitempty"`
+	Audit        AuditResult   `json:"audit,omitempty"`
 }
 
 func Verify(repoPath string, maxRetries int) VerifyResult {

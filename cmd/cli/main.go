@@ -340,7 +340,18 @@ Use --dry-run to preview changes without pushing.`,
 				}
 			}
 
-			// Phase 4: Vulnerability scan + fix
+			// Phase 4: Runtime verification — start app and check health
+			fmt.Println("\n  [RUNTIME] Verifying application starts...")
+			rtResult := verify.RunRuntimeCheck(repoPath)
+			if !rtResult.Started {
+				fmt.Printf("  [SKIP] Runtime check: %s\n", rtResult.Error)
+			} else if rtResult.Healthy {
+				fmt.Println("  [OK] Application starts and responds to requests")
+			} else {
+				fmt.Printf("  [WARN] Runtime check: %s\n", rtResult.Error)
+			}
+
+			// Phase 5: Vulnerability scan + fix
 			fmt.Println("\n  [AUDIT] Scanning for vulnerabilities...")
 			auditResult := verify.RunAudit(repoPath)
 			vResult.Audit = auditResult
