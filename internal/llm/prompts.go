@@ -22,3 +22,9 @@ var SystemPromptCodemod string
 
 //go:embed prompts/user_codemod.txt
 var PromptCodemod string
+
+//go:embed prompts/system_analyze.txt
+var SystemPromptAnalyze string
+
+//go:embed prompts/user_analyze.txt
+var PromptAnalyze string

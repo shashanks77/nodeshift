@@ -1,0 +1,3 @@
+Here is the package.json to analyze for Node.js {{TARGET}} compatibility:
+
+{{PACKAGE_JSON}}
