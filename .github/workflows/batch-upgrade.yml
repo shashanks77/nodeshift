@@ -46,8 +46,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config --global user.name "nodeshift[bot]"
-          git config --global user.email "nodeshift-bot@users.noreply.github.com"
+          git config --global user.name "nodeshift[ai]"
+          git config --global user.email "shashank.shekharsing@shl.com"
 
       - name: Cache Ollama model
         if: ${{ github.event.inputs.llm_enabled != 'false' }}
