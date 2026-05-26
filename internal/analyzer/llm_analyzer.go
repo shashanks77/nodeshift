@@ -46,12 +46,19 @@ Consider:
 4. Testing frameworks that need major version bumps
 5. Build tools that may be incompatible
 6. Any package known to have issues with Node %d
+7. Deprecated/unmaintained packages that won't receive Node %d compatibility patches:
+   - aws-sdk v2 (use @aws-sdk/* v3)
+   - request (use axios/undici/fetch)
+   - tslint (use eslint)
+   - nats v1.x (use nats v2.x with JetStream)
+   - moleculer 0.14.x (use 0.15+)
+   - nodemon 2.x (use 3.x)
 
-Do NOT suggest upgrades for packages that are already compatible.
-Do NOT suggest upgrades just because a newer version exists — only if needed for Node %d compatibility.
+Flag packages that are deprecated or unmaintained even if not strictly a Node version issue — they will NOT receive patches for Node %d compatibility bugs.
+Do NOT suggest upgrades for packages that are already on a supported version.
 
 Respond with ONLY a JSON array of objects. No markdown, no explanation, just the JSON array.
-If no packages need upgrading, respond with an empty array: []`, targetVersion, targetVersion, targetVersion, targetVersion)
+If no packages need upgrading, respond with an empty array: []`, targetVersion, targetVersion, targetVersion, targetVersion, targetVersion)
 
 	user := fmt.Sprintf("Here is the package.json to analyze for Node.js %d compatibility:\n\n%s", targetVersion, string(data))
 
