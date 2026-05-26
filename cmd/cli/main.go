@@ -457,6 +457,19 @@ Use --dry-run to preview changes without pushing.`,
 					DetectedConfigs:  configs,
 					DependencyIssues: issues,
 					FilesChanged:     filesChanged,
+					Verify: &types.VerifySummary{
+						NpmInstallOk:    vResult.NpmInstallOk,
+						TscOk:           vResult.TscOk,
+						TscErrorCount:   len(vResult.TscErrors),
+						TscFixedByLLM:   !vResult.TscOk && len(vResult.TscErrors) > 0,
+						TestsOk:         vResult.TestsOk,
+						RuntimeOk:       vResult.RuntimeOk,
+						RuntimeSkipped:  !vResult.Runtime.Started,
+						RuntimeError:    vResult.Runtime.Error,
+						AuditBefore:     len(vResult.Audit.Before),
+						AuditAfter:      len(vResult.Audit.After),
+						AuditFixApplied: vResult.Audit.FixApplied,
+					},
 				}
 				prURL, err := gh.CreatePR(report, branch)
 				if err != nil {
@@ -741,6 +754,19 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		DetectedConfigs:  configs,
 		DependencyIssues: issues,
 		FilesChanged:     filesChanged,
+		Verify: &types.VerifySummary{
+			NpmInstallOk:    vResult.NpmInstallOk,
+			TscOk:           vResult.TscOk,
+			TscErrorCount:   len(vResult.TscErrors),
+			TscFixedByLLM:   !vResult.TscOk && len(vResult.TscErrors) > 0,
+			TestsOk:         vResult.TestsOk,
+			RuntimeOk:       vResult.RuntimeOk,
+			RuntimeSkipped:  !vResult.Runtime.Started,
+			RuntimeError:    vResult.Runtime.Error,
+			AuditBefore:     len(vResult.Audit.Before),
+			AuditAfter:      len(vResult.Audit.After),
+			AuditFixApplied: vResult.Audit.FixApplied,
+		},
 	}
 
 	prURL, err := gh.CreatePR(report, branch)

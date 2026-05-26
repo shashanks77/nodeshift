@@ -150,6 +150,53 @@ func (c *Client) generatePRBody(report types.UpgradeReport) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "## Node.js Upgrade to %d\n\n", c.TargetVersion)
+
+	// Verification summary
+	if v := report.Verify; v != nil {
+		b.WriteString("### Verification Results\n\n")
+		b.WriteString("| Phase | Result |\n|-------|--------|\n")
+
+		if v.NpmInstallOk {
+			b.WriteString("| npm install | ✅ Passed |\n")
+		} else {
+			b.WriteString("| npm install | ❌ Failed |\n")
+		}
+
+		if v.TscOk {
+			b.WriteString("| TypeScript compile | ✅ Passed |\n")
+		} else if v.TscFixedByLLM {
+			fmt.Fprintf(&b, "| TypeScript compile | ✅ %d error(s) fixed by LLM |\n", v.TscErrorCount)
+		} else {
+			fmt.Fprintf(&b, "| TypeScript compile | ⚠️ %d error(s) |\n", v.TscErrorCount)
+		}
+
+		if v.TestsOk {
+			b.WriteString("| Tests | ✅ Passed |\n")
+		} else {
+			b.WriteString("| Tests | ❌ Failed |\n")
+		}
+
+		if v.RuntimeSkipped {
+			fmt.Fprintf(&b, "| Runtime check | ⏭️ Skipped — %s |\n", v.RuntimeError)
+		} else if v.RuntimeOk {
+			b.WriteString("| Runtime check | ✅ App starts and responds |\n")
+		} else {
+			fmt.Fprintf(&b, "| Runtime check | ⚠️ %s |\n", v.RuntimeError)
+		}
+
+		if v.AuditBefore == 0 {
+			b.WriteString("| Security audit | ✅ No vulnerabilities |\n")
+		} else if v.AuditAfter == 0 {
+			fmt.Fprintf(&b, "| Security audit | ✅ %d vulnerabilities fixed |\n", v.AuditBefore)
+		} else if v.AuditFixApplied {
+			fmt.Fprintf(&b, "| Security audit | ⚠️ %d/%d resolved (npm audit fix) |\n", v.AuditBefore-v.AuditAfter, v.AuditBefore)
+		} else {
+			fmt.Fprintf(&b, "| Security audit | ⚠️ %d vulnerabilities found |\n", v.AuditBefore)
+		}
+
+		b.WriteString("\n")
+	}
+
 	b.WriteString("### What changed\n\n")
 	b.WriteString("| File | Type | Old Version | New Version |\n|------|------|-------------|-------------|\n")
 

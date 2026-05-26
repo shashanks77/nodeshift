@@ -19,12 +19,28 @@ type DependencyIssue struct {
 	SuggestedVersion string `json:"suggestedVersion,omitempty"`
 }
 
+// VerifySummary holds the verification phase results for the PR body.
+type VerifySummary struct {
+	NpmInstallOk    bool   `json:"npmInstallOk"`
+	TscOk           bool   `json:"tscOk"`
+	TscErrorCount   int    `json:"tscErrorCount,omitempty"`
+	TscFixedByLLM   bool   `json:"tscFixedByLLM,omitempty"`
+	TestsOk         bool   `json:"testsOk"`
+	RuntimeOk       bool   `json:"runtimeOk"`
+	RuntimeSkipped  bool   `json:"runtimeSkipped,omitempty"`
+	RuntimeError    string `json:"runtimeError,omitempty"`
+	AuditBefore     int    `json:"auditBefore"`
+	AuditAfter      int    `json:"auditAfter"`
+	AuditFixApplied bool   `json:"auditFixApplied"`
+}
+
 // UpgradeReport summarises the upgrade for PR description and logging.
 type UpgradeReport struct {
 	Repo             string               `json:"repo"`
 	DetectedConfigs  []DetectedNodeConfig `json:"detectedConfigs"`
 	DependencyIssues []DependencyIssue    `json:"dependencyIssues"`
 	FilesChanged     []string             `json:"filesChanged"`
+	Verify           *VerifySummary       `json:"verify,omitempty"`
 }
 
 // RepoEntry is one repository to process (batch mode).

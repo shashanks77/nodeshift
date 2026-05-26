@@ -98,5 +98,15 @@
     "url": "https://github.com/SHL-India/FOCUS-reporting-service.git",
     "baseBranch": "main",
     "disabled": false
+  },
+  {
+    "url": "https://github.com/SHL-India/FMS-micron.git",
+    "baseBranch": "main",
+    "disabled": false
+  },
+  {
+    "url": "https://github.com/SHL-India/FOCUS-sf-graphql.git",
+    "baseBranch": "master",
+    "disabled": false
   }
 ]
