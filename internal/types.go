@@ -49,12 +49,20 @@ type RepoEntry struct {
 	Name       string `json:"name,omitempty"`
 	URL        string `json:"url,omitempty"`
 	BaseBranch string `json:"baseBranch,omitempty"`
+	Disabled   bool   `json:"disabled,omitempty"`
+}
+
+// RepoGroup is a named group of repositories with a shared schedule.
+type RepoGroup struct {
+	Group    string      `json:"group"`
+	Schedule int         `json:"schedule"` // Day of month (1-28) to run this group
+	Repos    []RepoEntry `json:"repos"`
 }
 
 // BatchResult holds the outcome of processing one repo in batch mode.
 type BatchResult struct {
 	Repo   string `json:"repo"`
-	Status string `json:"status"` // "success", "up-to-date", "error"
+	Status string `json:"status"` // "success", "up-to-date", "error", "skipped"
 	PRUrl  string `json:"prUrl,omitempty"`
 	Error  string `json:"error,omitempty"`
 }

@@ -507,39 +507,61 @@ func batchCmd() *cobra.Command {
 		reposFile  string
 		llmURL     string
 		llmModel   string
+		scheduled  bool
+		group      string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "batch",
 		Short: "Upgrade multiple repos from a JSON file",
-		Long: `Process multiple repositories in sequence. Provide a JSON file with:
+		Long: `Process multiple repositories in sequence. Supports two JSON formats:
+
+Grouped format (recommended for company-scale):
 [
-  {"url": "https://github.com/org/repo1.git", "baseBranch": "develop"},
-  {"url": "https://github.com/org/repo2.git"},
-  {"owner": "org", "name": "repo3", "baseBranch": "main"}
+  {
+    "group": "fms",
+    "schedule": 1,
+    "repos": [
+      {"url": "https://github.com/org/repo1.git", "baseBranch": "main"}
+    ]
+  }
 ]
 
-Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summary table.`,
+Flat format (backward compatible):
+[
+  {"url": "https://github.com/org/repo1.git", "baseBranch": "develop"}
+]
+
+Use --scheduled to only process groups whose schedule matches today's day of month.
+Use --group to process a specific group by name.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Read repo list first (to check schedule before requiring token)
+			data, err := os.ReadFile(reposFile)
+			if err != nil {
+				return fmt.Errorf("cannot read repos file %s: %w", reposFile, err)
+			}
+
+			repos, err := resolveRepos(data, scheduled, group)
+			if err != nil {
+				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
+			}
+
+			if len(repos) == 0 {
+				if scheduled {
+					fmt.Printf("No groups scheduled for today (day %d). Nothing to do.\n", time.Now().Day())
+				} else if group != "" {
+					fmt.Printf("No repos found in group %q.\n", group)
+				} else {
+					return fmt.Errorf("no repos found in %s", reposFile)
+				}
+				return nil
+			}
+
 			if token == "" {
 				token = os.Getenv("GITHUB_TOKEN")
 			}
 			if token == "" {
 				return fmt.Errorf("GITHUB_TOKEN required for batch mode (set in .env or environment)")
-			}
-
-			// Read repo list
-			var repos []types.RepoEntry
-			data, err := os.ReadFile(reposFile)
-			if err != nil {
-				return fmt.Errorf("cannot read repos file %s: %w", reposFile, err)
-			}
-			if err := json.Unmarshal(data, &repos); err != nil {
-				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
-			}
-
-			if len(repos) == 0 {
-				return fmt.Errorf("no repos found in %s", reposFile)
 			}
 
 			fmt.Printf("\n=== NODESHIFT BATCH: %d repos, target Node %d ===\n\n", len(repos), target)
@@ -606,8 +628,54 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
 	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (enables LLM fix during upgrade)")
 	cmd.Flags().StringVar(&llmModel, "llm-model", "qwen2.5-coder:7b", "LLM model name")
+	cmd.Flags().BoolVar(&scheduled, "scheduled", false, "Only process groups whose schedule matches today's day of month")
+	cmd.Flags().StringVarP(&group, "group", "g", "", "Process only a specific group by name")
 
 	return cmd
+}
+
+// resolveRepos parses the repos JSON file, supporting both grouped and flat formats.
+// When scheduled=true, only groups matching today's day-of-month are included.
+// When group is non-empty, only that specific group is included.
+func resolveRepos(data []byte, scheduled bool, group string) ([]types.RepoEntry, error) {
+	// Try grouped format first
+	var groups []types.RepoGroup
+	if err := json.Unmarshal(data, &groups); err == nil && len(groups) > 0 && groups[0].Group != "" {
+		today := time.Now().Day()
+		var repos []types.RepoEntry
+
+		for _, g := range groups {
+			// Filter by group name if specified
+			if group != "" && g.Group != group {
+				continue
+			}
+			// Filter by schedule if --scheduled flag is set
+			if scheduled && g.Schedule != today {
+				continue
+			}
+			for _, r := range g.Repos {
+				if !r.Disabled {
+					repos = append(repos, r)
+				}
+			}
+		}
+		return repos, nil
+	}
+
+	// Fall back to flat format
+	var repos []types.RepoEntry
+	if err := json.Unmarshal(data, &repos); err != nil {
+		return nil, err
+	}
+
+	// Filter disabled repos
+	var active []types.RepoEntry
+	for _, r := range repos {
+		if !r.Disabled {
+			active = append(active, r)
+		}
+	}
+	return active, nil
 }
 
 // processSingleRepo runs the full upgrade pipeline on one repo and returns a result.
