@@ -159,14 +159,16 @@ The GitHub Actions workflow (`.github/workflows/batch-upgrade.yml`) runs **daily
 
 ### Scheduling Model
 
+<!-- SCHEDULE-TABLE-START -->
 | Day of Month | Group | Repos |
 |:---:|--------|-------|
 | 1st | `focus` | sf-graphql |
-| 2nd | `focus-microservices` | auditing, auth, biodata, content, extracts, insight, notification, subscription, package, tcresponse, user, uploader, micron |
+| 2nd | `focus-microservices` | auditing, auth, biodata, content, extracts, insight, notification, subscription, package, tcresponse, user, users.uploader, micron |
 | 3rd | `tci` | tci-focus (disabled) |
-| 4th | `dm` | validation, upload, hris |
-| 5th | `360` | mfs-api, mfs-reports, scoring |
+| 4th | `dm` | validation, upload, hris-file-validation |
+| 5th | `360` | mfs-api, mfs-reports, scoring-service |
 | 6th | `360-integration` | reporting-service |
+<!-- SCHEDULE-TABLE-END -->
 
 ### Usage
 

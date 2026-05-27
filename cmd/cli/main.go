@@ -29,6 +29,7 @@ func main() {
 	rootCmd.AddCommand(scanCmd())
 	rootCmd.AddCommand(upgradeCmd())
 	rootCmd.AddCommand(batchCmd())
+	rootCmd.AddCommand(docsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -632,6 +633,105 @@ Use --group to process a specific group by name.`,
 	cmd.Flags().StringVarP(&group, "group", "g", "", "Process only a specific group by name")
 
 	return cmd
+}
+
+func docsCmd() *cobra.Command {
+	var reposFile string
+	var readmePath string
+
+	cmd := &cobra.Command{
+		Use:   "docs",
+		Short: "Regenerate README scheduling table from repos.json",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(reposFile)
+			if err != nil {
+				return fmt.Errorf("cannot read %s: %w", reposFile, err)
+			}
+
+			var groups []types.RepoGroup
+			if err := json.Unmarshal(data, &groups); err != nil {
+				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
+			}
+
+			// Generate markdown table
+			var table strings.Builder
+			table.WriteString("| Day of Month | Group | Repos |\n")
+			table.WriteString("|:---:|--------|-------|\n")
+
+			for _, g := range groups {
+				day := formatDay(g.Schedule)
+				var repoNames []string
+				for _, r := range g.Repos {
+					name := extractRepoName(r.URL)
+					if r.Disabled {
+						name += " (disabled)"
+					}
+					repoNames = append(repoNames, name)
+				}
+				table.WriteString(fmt.Sprintf("| %s | `%s` | %s |\n", day, g.Group, strings.Join(repoNames, ", ")))
+			}
+
+			// Read README and replace between markers
+			readme, err := os.ReadFile(readmePath)
+			if err != nil {
+				return fmt.Errorf("cannot read %s: %w", readmePath, err)
+			}
+
+			content := string(readme)
+			startMarker := "<!-- SCHEDULE-TABLE-START -->"
+			endMarker := "<!-- SCHEDULE-TABLE-END -->"
+
+			startIdx := strings.Index(content, startMarker)
+			endIdx := strings.Index(content, endMarker)
+			if startIdx == -1 || endIdx == -1 {
+				return fmt.Errorf("markers %s / %s not found in %s", startMarker, endMarker, readmePath)
+			}
+
+			newContent := content[:startIdx+len(startMarker)] + "\n" + table.String() + content[endIdx:]
+
+			if err := os.WriteFile(readmePath, []byte(newContent), 0644); err != nil {
+				return fmt.Errorf("cannot write %s: %w", readmePath, err)
+			}
+
+			fmt.Printf("Updated %s scheduling table (%d groups)\n", readmePath, len(groups))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&reposFile, "file", "f", "repos.json", "Repos JSON file")
+	cmd.Flags().StringVarP(&readmePath, "readme", "r", "README.md", "README file to update")
+
+	return cmd
+}
+
+func formatDay(day int) string {
+	suffix := "th"
+	switch {
+	case day == 1 || day == 21:
+		suffix = "st"
+	case day == 2 || day == 22:
+		suffix = "nd"
+	case day == 3 || day == 23:
+		suffix = "rd"
+	}
+	return fmt.Sprintf("%d%s", day, suffix)
+}
+
+func extractRepoName(url string) string {
+	// "https://github.com/SHL-India/FMS-focus.service.auth.git" → "auth"
+	name := url
+	name = strings.TrimSuffix(name, ".git")
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	// Strip common prefixes
+	for _, prefix := range []string{"FMS-focus.service.", "FOCUS-", "TDM-service.user.", "TDM-lambda-", "TDM-", "MFS-", "FMS-"} {
+		if strings.HasPrefix(name, prefix) {
+			name = name[len(prefix):]
+			break
+		}
+	}
+	return name
 }
 
 // resolveRepos parses the repos JSON file, supporting both grouped and flat formats.

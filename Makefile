@@ -100,3 +100,7 @@ create-schedule:
 # Clean build artifacts
 clean:
 	rm -rf bin/
+
+# Regenerate README scheduling table from repos.json
+docs: build
+	./bin/$(BINARY_NAME) docs --file repos.json --readme README.md
