@@ -161,11 +161,8 @@ The GitHub Actions workflow (`.github/workflows/batch-upgrade.yml`) runs **daily
 
 | Day of Month | Group | Repos |
 |:---:|--------|-------|
-| 1st | `fms-low-risk` | 9 services (Node 20 → 24) |
-| 1st | `tci` | tci-focus |
-| 8th | `fms-medium-risk` | tcresponse, user, uploader |
+| 1st | `focus` | 16 services (auditing, auth, biodata, content, extracts, insight, notification, subscription, package, tcresponse, user, uploader, micron, reporting, sf-graphql, tci-focus) |
 | 8th | `tdm` | validation, upload, hris |
-| 15th | `fms-high-risk` | micron, reporting, sf-graphql |
 | 15th | `mfs` | mfs-api, mfs-reports, scoring |
 
 ### Usage
