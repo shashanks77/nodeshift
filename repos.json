@@ -4,6 +4,16 @@
     "schedule": 1,
     "repos": [
       {
+        "url": "https://github.com/SHL-India/FOCUS-sf-graphql.git",
+        "baseBranch": "master"
+      }
+    ]
+  },
+  {
+    "group": "focus-microservices",
+    "schedule": 2,
+    "repos": [
+      {
         "url": "https://github.com/SHL-India/FMS-focus.service.auditing.git",
         "baseBranch": "main"
       },
@@ -54,15 +64,13 @@
       {
         "url": "https://github.com/SHL-India/FMS-micron.git",
         "baseBranch": "main"
-      },
-      {
-        "url": "https://github.com/SHL-India/FOCUS-reporting-service.git",
-        "baseBranch": "main"
-      },
-      {
-        "url": "https://github.com/SHL-India/FOCUS-sf-graphql.git",
-        "baseBranch": "master"
-      },
+      }
+    ]
+  },
+  {
+    "group": "tci",
+    "schedule": 3,
+    "repos": [
       {
         "url": "https://github.com/SHL-India/FOCUS-tci-focus.git",
         "baseBranch": "develop",
@@ -71,8 +79,8 @@
     ]
   },
   {
-    "group": "tdm",
-    "schedule": 8,
+    "group": "dm",
+    "schedule": 4,
     "repos": [
       {
         "url": "https://github.com/SHL-India/TDM-service.user.validation.git",
@@ -89,8 +97,8 @@
     ]
   },
   {
-    "group": "mfs",
-    "schedule": 15,
+    "group": "360",
+    "schedule": 5,
     "repos": [
       {
         "url": "https://github.com/SHL-India/MFS-mfs-api.git",
@@ -103,6 +111,16 @@
       {
         "url": "https://github.com/SHL-India/MFS-scoring-service.git",
         "baseBranch": "master"
+      }
+    ]
+  },
+  {
+    "group": "360-integration",
+    "schedule": 6,
+    "repos": [
+      {
+        "url": "https://github.com/SHL-India/FOCUS-reporting-service.git",
+        "baseBranch": "main"
       }
     ]
   }
