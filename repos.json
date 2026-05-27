@@ -107,10 +107,6 @@
       {
         "url": "https://github.com/SHL-India/MFS-mfs-reports.git",
         "baseBranch": "master"
-      },
-      {
-        "url": "https://github.com/SHL-India/MFS-scoring-service.git",
-        "baseBranch": "master"
       }
     ]
   },
@@ -121,6 +117,10 @@
       {
         "url": "https://github.com/SHL-India/FOCUS-reporting-service.git",
         "baseBranch": "main"
+      },
+      {
+        "url": "https://github.com/SHL-India/MFS-scoring-service.git",
+        "baseBranch": "master"
       }
     ]
   }
