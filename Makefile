@@ -101,6 +101,12 @@ create-schedule:
 clean:
 	rm -rf bin/
 
+# Install git hooks
+setup:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Git hooks installed."
+
 # Regenerate README scheduling table from repos.json
 docs: build
 	./bin/$(BINARY_NAME) docs --file repos.json --readme README.md
