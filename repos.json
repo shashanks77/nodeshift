@@ -116,11 +116,11 @@
     "repos": [
       {
         "url": "https://github.com/SHL-India/FOCUS-reporting-service.git",
-        "baseBranch": "main"
+        "baseBranch": "develop"
       },
       {
         "url": "https://github.com/SHL-India/MFS-scoring-service.git",
-        "baseBranch": "master"
+        "baseBranch": "develop"
       }
     ]
   }
