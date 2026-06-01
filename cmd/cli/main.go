@@ -92,12 +92,13 @@ func scanCmd() *cobra.Command {
 
 func upgradeCmd() *cobra.Command {
 	var (
-		target     int
-		baseBranch string
-		token      string
-		dryRun     bool
-		llmURL     string
-		llmModel   string
+		target      int
+		baseBranch  string
+		token       string
+		dryRun      bool
+		llmURL      string
+		llmModel    string
+		llmProvider string
 	)
 
 	cmd := &cobra.Command{
@@ -200,8 +201,8 @@ Use --dry-run to preview changes without pushing.`,
 			}
 
 			// LLM-based analysis (merges with static analysis)
-			if llmURL != "" {
-				llmClient := llm.NewClient(llmURL, llmModel)
+			if llmProvider != "off" {
+				llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 				if err := llmClient.Ping(); err == nil {
 					llmIssues, _ := analyzer.AnalyzeWithLLM(llmClient, repoPath, target)
 					if len(llmIssues) > 0 {
@@ -246,11 +247,12 @@ Use --dry-run to preview changes without pushing.`,
 			}
 
 			// Phase 2: LLM-powered API migration for upgraded dependencies
-			if llmURL != "" && len(issues) > 0 {
-				llmClient := llm.NewClient(llmURL, llmModel)
+			if llmProvider != "off" && len(issues) > 0 {
+				llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 				if err := llmClient.Ping(); err != nil {
 					fmt.Printf("  [LLM-CODEMOD] Cannot reach LLM: %v\n", err)
 				} else {
+					fmt.Printf("  [LLM] Using provider: %s\n", llmClient.ActiveProvider())
 					codemodResult := llm.FixDeprecatedAPIs(llmClient, repoPath, target, issues)
 					if len(codemodResult.FilesFixed) > 0 {
 						fmt.Printf("  [OK] LLM codemod: migrated %d file(s)\n", len(codemodResult.FilesFixed))
@@ -304,12 +306,12 @@ Use --dry-run to preview changes without pushing.`,
 				}
 
 				// Phase 3b: LLM-assisted fix for tsc errors and test failures
-				if llmURL != "" && (!vResult.TscOk || !vResult.TestsOk) {
-					llmClient := llm.NewClient(llmURL, llmModel)
+				if llmProvider != "off" && (!vResult.TscOk || !vResult.TestsOk) {
+					llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 					if err := llmClient.Ping(); err != nil {
-						fmt.Printf("  [LLM] Cannot reach LLM at %s: %v\n", llmURL, err)
+						fmt.Printf("  [LLM] No LLM provider available: %v\n", err)
 					} else {
-						fmt.Printf("  [LLM] Connected to %s (model: %s)\n", llmURL, llmModel)
+						fmt.Printf("  [LLM] Connected via %s\n", llmClient.ActiveProvider())
 
 						if !vResult.TscOk && len(vResult.TscErrors) > 0 {
 							fmt.Printf("  [LLM] Fixing %d tsc error(s)...\n", len(vResult.TscErrors))
@@ -411,8 +413,8 @@ Use --dry-run to preview changes without pushing.`,
 			}
 
 			// Phase 4b: LLM-assisted vulnerability resolution
-			if llmURL != "" && len(vResult.Audit.After) > 0 {
-				llmClient := llm.NewClient(llmURL, llmModel)
+			if llmProvider != "off" && len(vResult.Audit.After) > 0 {
+				llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 				if err := llmClient.Ping(); err == nil {
 					fmt.Printf("\n  [LLM] Attempting to resolve %d remaining vulnerabilities...\n", len(vResult.Audit.After))
 					vulnResult := llm.FixVulnerabilities(llmClient, repoPath, vResult.Audit.After)
@@ -493,23 +495,25 @@ Use --dry-run to preview changes without pushing.`,
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Base branch for PR")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (enables LLM fix during upgrade)")
-	cmd.Flags().StringVar(&llmModel, "llm-model", "qwen2.5-coder:7b", "LLM model name")
+	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (fallback if GitHub Models unavailable)")
+	cmd.Flags().StringVar(&llmModel, "llm-model", "", "LLM model override (default: auto-select per provider)")
+	cmd.Flags().StringVar(&llmProvider, "llm-provider", "auto", "LLM provider: auto|github|ollama (auto = GitHub Models primary, Ollama fallback)")
 
 	return cmd
 }
 
 func batchCmd() *cobra.Command {
 	var (
-		target     int
-		baseBranch string
-		token      string
-		dryRun     bool
-		reposFile  string
-		llmURL     string
-		llmModel   string
-		scheduled  bool
-		group      string
+		target      int
+		baseBranch  string
+		token       string
+		dryRun      bool
+		reposFile   string
+		llmURL      string
+		llmModel    string
+		llmProvider string
+		scheduled   bool
+		group       string
 	)
 
 	cmd := &cobra.Command{
@@ -593,7 +597,7 @@ Use --group to process a specific group by name.`,
 				fmt.Printf("━━━ [%d/%d] %s (base: %s) ━━━\n", i+1, len(repos), repoLabel, base)
 				start := time.Now()
 
-				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, llmURL, llmModel)
+				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, llmProvider, llmURL, llmModel)
 				result.Repo = repoLabel
 
 				elapsed := time.Since(start).Round(time.Second)
@@ -627,8 +631,9 @@ Use --group to process a specific group by name.`,
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Default base branch (overridden per-repo)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (enables LLM fix during upgrade)")
-	cmd.Flags().StringVar(&llmModel, "llm-model", "qwen2.5-coder:7b", "LLM model name")
+	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (fallback if GitHub Models unavailable)")
+	cmd.Flags().StringVar(&llmModel, "llm-model", "", "LLM model override (default: auto-select per provider)")
+	cmd.Flags().StringVar(&llmProvider, "llm-provider", "auto", "LLM provider: auto|github|ollama (auto = GitHub Models primary, Ollama fallback)")
 	cmd.Flags().BoolVar(&scheduled, "scheduled", false, "Only process groups whose schedule matches today's day of month")
 	cmd.Flags().StringVarP(&group, "group", "g", "", "Process only a specific group by name")
 
@@ -778,8 +783,23 @@ func resolveRepos(data []byte, scheduled bool, group string) ([]types.RepoEntry,
 	return active, nil
 }
 
+// makeLLMClient creates an LLM client based on provider preference.
+// "auto" = GitHub Models primary (if token available) + Ollama fallback
+// "github" = GitHub Models only
+// "ollama" = Ollama only
+func makeLLMClient(githubToken, provider, ollamaURL, modelOverride string) *llm.Client {
+	switch provider {
+	case "github":
+		return llm.NewClient(githubToken, modelOverride, "", "")
+	case "ollama":
+		return llm.NewClient("", "", ollamaURL, modelOverride)
+	default: // "auto"
+		return llm.NewClient(githubToken, modelOverride, ollamaURL, modelOverride)
+	}
+}
+
 // processSingleRepo runs the full upgrade pipeline on one repo and returns a result.
-func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun bool, llmURL, llmModel string) types.BatchResult {
+func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun bool, llmProvider, llmURL, llmModel string) types.BatchResult {
 	gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 
 	repoPath, err := gh.Clone()
@@ -811,11 +831,12 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 	filesChanged = append(filesChanged, configChanged...)
 
 	// Phase 2: LLM-powered API migration for upgraded dependencies
-	if llmURL != "" && len(issues) > 0 {
-		llmClient := llm.NewClient(llmURL, llmModel)
+	if llmProvider != "off" && len(issues) > 0 {
+		llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 		if err := llmClient.Ping(); err != nil {
 			fmt.Printf("  [LLM-CODEMOD] Cannot reach LLM: %v\n", err)
 		} else {
+			fmt.Printf("  [LLM] Using provider: %s\n", llmClient.ActiveProvider())
 			codemodResult := llm.FixDeprecatedAPIs(llmClient, repoPath, target, issues)
 			if len(codemodResult.FilesFixed) > 0 {
 				fmt.Printf("  [OK] LLM codemod: migrated %d file(s)\n", len(codemodResult.FilesFixed))
@@ -851,10 +872,10 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		}
 
 		// Phase 3b: LLM-assisted fix for tsc errors and test failures
-		if llmURL != "" && (!vResult.TscOk || !vResult.TestsOk) {
-			llmClient := llm.NewClient(llmURL, llmModel)
+		if llmProvider != "off" && (!vResult.TscOk || !vResult.TestsOk) {
+			llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 			if err := llmClient.Ping(); err == nil {
-				fmt.Printf("  [LLM] Connected to %s (model: %s)\n", llmURL, llmModel)
+				fmt.Printf("  [LLM] Connected via %s\n", llmClient.ActiveProvider())
 
 				if !vResult.TscOk && len(vResult.TscErrors) > 0 {
 					fmt.Printf("  [LLM] Fixing %d tsc error(s)...\n", len(vResult.TscErrors))
@@ -890,8 +911,8 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 	}
 
 	// Phase 4b: LLM-assisted vulnerability resolution
-	if llmURL != "" && len(auditResult.After) > 0 {
-		llmClient := llm.NewClient(llmURL, llmModel)
+	if llmProvider != "off" && len(auditResult.After) > 0 {
+		llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
 		if err := llmClient.Ping(); err == nil {
 			fmt.Printf("  [LLM] Attempting to resolve %d remaining vulnerabilities...\n", len(auditResult.After))
 			vulnResult := llm.FixVulnerabilities(llmClient, repoPath, auditResult.After)

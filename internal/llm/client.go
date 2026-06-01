@@ -1,19 +1,14 @@
 package llm
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
 )
 
-// Client talks to an Ollama-compatible (OpenAI chat/completions) API.
+// Client wraps multiple providers with automatic fallback.
+// Primary: GitHub Models (Claude Opus). Fallback: Ollama (local).
 type Client struct {
-	BaseURL string
-	Model   string
-	client  *http.Client
+	providers []Provider
+	active    Provider
 }
 
 type chatMessage struct {
@@ -33,88 +28,58 @@ type chatChoice struct {
 
 type chatResponse struct {
 	Choices []chatChoice `json:"choices"`
-	// Ollama native format (non-OpenAI compat)
-	Message chatMessage `json:"message"`
+	Message chatMessage  `json:"message"`
 }
 
-func NewClient(baseURL, model string) *Client {
-	return &Client{
-		BaseURL: baseURL,
-		Model:   model,
-		client: &http.Client{
-			Timeout: 300 * time.Second,
-		},
+// NewClient creates a client with GitHub Models as primary and Ollama as fallback.
+// If githubToken is provided, GitHub Models is tried first.
+// If ollamaURL is provided (or defaults to localhost:11434), Ollama is the fallback.
+func NewClient(githubToken, githubModel, ollamaURL, ollamaModel string) *Client {
+	c := &Client{}
+
+	if githubToken != "" {
+		c.providers = append(c.providers, NewGitHubModelsProvider(githubToken, githubModel))
 	}
+
+	// Always add Ollama as fallback
+	c.providers = append(c.providers, NewOllamaProvider(ollamaURL, ollamaModel))
+
+	return c
 }
 
-// Chat sends a system + user message and returns the assistant reply.
+// Chat sends a message through the first available provider, falling back on error.
 func (c *Client) Chat(system, user string) (string, error) {
-	msgs := []chatMessage{
-		{Role: "system", Content: system},
-		{Role: "user", Content: user},
+	var lastErr error
+	for _, p := range c.providers {
+		result, err := p.Chat(system, user)
+		if err == nil {
+			c.active = p
+			return result, nil
+		}
+		lastErr = err
+		fmt.Printf("  [LLM] %s failed: %v, trying next provider...\n", p.Name(), err)
 	}
-
-	body, err := json.Marshal(chatRequest{
-		Model:    c.Model,
-		Messages: msgs,
-		Stream:   false,
-	})
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	// Try OpenAI-compat endpoint first, fall back to Ollama native
-	resp, err := c.post("/v1/chat/completions", body)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM API %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var chatResp chatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return "", fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	// OpenAI format: choices[0].message.content
-	if len(chatResp.Choices) > 0 {
-		return chatResp.Choices[0].Message.Content, nil
-	}
-
-	// Ollama native format: message.content
-	if chatResp.Message.Content != "" {
-		return chatResp.Message.Content, nil
-	}
-
-	return "", fmt.Errorf("empty response from LLM")
+	return "", fmt.Errorf("all LLM providers failed: %w", lastErr)
 }
 
-// Ping checks if the LLM server is reachable.
+// Ping checks if at least one provider is available.
 func (c *Client) Ping() error {
-	resp, err := c.client.Get(c.BaseURL + "/api/tags")
-	if err != nil {
-		return fmt.Errorf("LLM server unreachable at %s: %w", c.BaseURL, err)
+	for _, p := range c.providers {
+		if p.Available() {
+			c.active = p
+			return nil
+		}
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("LLM server returned %d", resp.StatusCode)
-	}
-	return nil
+	return fmt.Errorf("no LLM provider available")
 }
 
-func (c *Client) post(path string, body []byte) (*http.Response, error) {
-	req, err := http.NewRequest("POST", c.BaseURL+path, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+// ActiveProvider returns the name of the currently active provider.
+func (c *Client) ActiveProvider() string {
+	if c.active != nil {
+		return c.active.Name()
 	}
-	req.Header.Set("Content-Type", "application/json")
-	return c.client.Do(req)
+	if len(c.providers) > 0 {
+		return c.providers[0].Name()
+	}
+	return "none"
 }

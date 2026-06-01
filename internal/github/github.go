@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	gh "github.com/google/go-github/v60/github"
 	"golang.org/x/oauth2"
@@ -50,7 +49,7 @@ func (c *Client) Clone() (string, error) {
 	// Remove any previous clone
 	os.RemoveAll(localPath)
 
-	cmd := exec.Command("git", "clone", "--depth=1", "--branch", c.BaseBranch, cloneURL, localPath)
+	cmd := exec.Command("git", "clone", "--branch", c.BaseBranch, cloneURL, localPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -59,16 +58,63 @@ func (c *Client) Clone() (string, error) {
 	return localPath, nil
 }
 
-func (c *Client) CreateBranch(repoPath string) (string, error) {
-	date := time.Now().Format("2006-01-02")
-	branch := "chore/node-" + strconv.Itoa(c.TargetVersion) + "-upgrade-" + date
+// BranchName returns the deterministic upgrade branch name.
+func (c *Client) BranchName() string {
+	return "chore/node-" + strconv.Itoa(c.TargetVersion) + "-upgrade"
+}
 
+// SetupBranch checks if the upgrade branch exists remotely.
+// If it does, checks it out (to build incrementally on previous work).
+// If not, creates a new branch from the current HEAD (base branch).
+// Returns (branchName, isExisting, error).
+func (c *Client) SetupBranch(repoPath string) (string, bool, error) {
+	branch := c.BranchName()
+
+	// Check if branch exists on remote
+	cmd := exec.Command("git", "ls-remote", "--heads", "origin", branch)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		// ls-remote failed — assume branch doesn't exist
+		return c.createNewBranch(repoPath, branch)
+	}
+
+	if strings.TrimSpace(string(out)) != "" {
+		// Branch exists remotely — fetch and checkout
+		cmd = exec.Command("git", "fetch", "origin", branch)
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err != nil {
+			// Fetch failed — fall back to creating new branch
+			return c.createNewBranch(repoPath, branch)
+		}
+
+		cmd = exec.Command("git", "checkout", branch)
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err != nil {
+			return "", false, fmt.Errorf("git checkout %s: %w", branch, err)
+		}
+
+		fmt.Printf("  [BRANCH] Checked out existing branch: %s\n", branch)
+		return branch, true, nil
+	}
+
+	return c.createNewBranch(repoPath, branch)
+}
+
+func (c *Client) createNewBranch(repoPath, branch string) (string, bool, error) {
 	cmd := exec.Command("git", "checkout", "-b", branch)
 	cmd.Dir = repoPath
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git checkout -b: %w", err)
+		return "", false, fmt.Errorf("git checkout -b %s: %w", branch, err)
 	}
-	return branch, nil
+	fmt.Printf("  [BRANCH] Created new branch: %s\n", branch)
+	return branch, false, nil
+}
+
+// CreateBranch is kept for backward compatibility but now uses SetupBranch internally.
+func (c *Client) CreateBranch(repoPath string) (string, error) {
+	branch, _, err := c.SetupBranch(repoPath)
+	return branch, err
 }
 
 func (c *Client) CommitAndPush(repoPath string, files []string, branch string) error {
@@ -77,11 +123,20 @@ func (c *Client) CommitAndPush(repoPath string, files []string, branch string) e
 		return nil
 	}
 
-	args := append([]string{"add"}, files...)
-	cmd := exec.Command("git", args...)
+	// Stage all changed files
+	cmd := exec.Command("git", "add", "-A")
 	cmd.Dir = repoPath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git add: %w", err)
+	}
+
+	// Check if there are any staged changes
+	cmd = exec.Command("git", "diff", "--cached", "--quiet")
+	cmd.Dir = repoPath
+	if err := cmd.Run(); err == nil {
+		// Exit code 0 means no diff — nothing to commit
+		fmt.Println("  [INFO] No changes to commit — branch already up-to-date")
+		return nil
 	}
 
 	msg := fmt.Sprintf("chore: upgrade Node.js runtime to %d\n\nAutomated upgrade by nodeshift.", c.TargetVersion)
