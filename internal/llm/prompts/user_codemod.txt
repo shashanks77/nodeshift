@@ -8,5 +8,5 @@ File: %s
 ```
 %s
 ```
-
+%s
 Return the complete updated file content.

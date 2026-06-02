@@ -7,5 +7,5 @@ File: %s
 
 Errors:
 %s
-
+%s
 Return the complete fixed file content.

@@ -881,11 +881,43 @@ func RunAudit(repoPath string) AuditResult {
 		return result
 	}
 
-	_, fixErr := runWithTimeout(repoPath, 120*time.Second, "npm", "audit", "fix", "--legacy-peer-deps")
-	if fixErr != nil && strings.Contains(fixErr.Error(), "timed out") {
-		result.FixError = "npm audit fix timed out"
-		return result
+	// Snapshot package.json and lockfile for rollback
+	pkgPath := filepath.Join(repoPath, "package.json")
+	lockPath := filepath.Join(repoPath, "package-lock.json")
+	pkgBackup, _ := os.ReadFile(pkgPath)
+	lockBackup, _ := os.ReadFile(lockPath)
+
+	// Try aggressive fix first: npm audit fix --force
+	fmt.Println("  [AUDIT] Trying npm audit fix --force...")
+	_, forceErr := runWithTimeout(repoPath, 180*time.Second, "npm", "audit", "fix", "--force")
+	if forceErr != nil && strings.Contains(forceErr.Error(), "timed out") {
+		result.FixError = "npm audit fix --force timed out"
+		// Restore and try conservative
+		os.WriteFile(pkgPath, pkgBackup, 0644)
+		os.WriteFile(lockPath, lockBackup, 0644)
+		runWithTimeout(repoPath, 60*time.Second, "npm", "install", "--legacy-peer-deps")
+	} else {
+		// Verify the force fix didn't break npm install / tsc
+		installOk, _ := RunNpmInstall(repoPath)
+		tscOk, _ := RunTsc(repoPath)
+
+		if !installOk || !tscOk {
+			// Rollback: force fix broke things
+			fmt.Println("  [AUDIT] --force broke build, rolling back to conservative fix...")
+			os.WriteFile(pkgPath, pkgBackup, 0644)
+			os.WriteFile(lockPath, lockBackup, 0644)
+			runWithTimeout(repoPath, 60*time.Second, "npm", "install", "--legacy-peer-deps")
+			// Now try conservative
+			_, fixErr := runWithTimeout(repoPath, 120*time.Second, "npm", "audit", "fix", "--legacy-peer-deps")
+			if fixErr != nil && strings.Contains(fixErr.Error(), "timed out") {
+				result.FixError = "npm audit fix timed out"
+				return result
+			}
+		} else {
+			fmt.Println("  [AUDIT] --force succeeded, build still passes")
+		}
 	}
+
 	result.FixApplied = true
 
 	afterOut, _ := runWithTimeout(repoPath, 60*time.Second, "npm", "audit", "--json")

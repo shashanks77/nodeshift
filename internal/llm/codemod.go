@@ -61,7 +61,11 @@ func FixDeprecatedAPIs(client *Client, repoPath string, target int, issues []typ
 			continue
 		}
 
-		prompt := fmt.Sprintf(PromptCodemod, target, upgradeDesc.String(), relPath, string(content))
+		// Type context is not available during codemod phase (runs before npm install).
+		// The tsc fixer phase will use type definitions after npm install.
+		typeContext := ""
+
+		prompt := fmt.Sprintf(PromptCodemod, target, upgradeDesc.String(), relPath, string(content), typeContext)
 		reply, err := client.Chat(SystemPromptCodemod, prompt)
 		if err != nil {
 			fmt.Printf("  [LLM-CODEMOD] Error for %s: %v\n", relPath, err)

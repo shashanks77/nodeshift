@@ -6,3 +6,9 @@ Rules:
 - Fix only the specific errors mentioned
 - Do not add new imports unless strictly needed
 - Do not change code style or formatting beyond the fix
+- When type definitions from installed packages are provided, use them as the source of truth
+- Pay attention to "// Access path:" comments — they show the exact TypeScript access path for each type (e.g., `awsx.types.input.ecs.TaskDefinitionContainerDefinitionArgs`)
+- When a type needs to be wrapped in an object (e.g., `executionRole` expects `DefaultRoleWithPolicyArgs` which has `roleArn?: Input<string>`), wrap the value: `executionRole: { roleArn: existingValue }`
+- Do NOT invent property names. Use only properties shown in the provided interface definitions
+- When spreading a Partial<T> into an object that requires certain properties, add those required properties explicitly BEFORE the spread to satisfy the type checker (e.g., if `name` is required: `{ name: 'x', ...partialArgs }`)
+- When index signatures are incompatible due to Partial spread, use a type assertion: `{ key: { ...props, ...args } as TypeName }`

@@ -361,7 +361,7 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 
 		case "typescript":
 			if _, ok := devDeps["typescript"]; ok {
-				devDeps["typescript"] = "^5.4.0"
+				devDeps["typescript"] = issue.SuggestedVersion
 				modified = true
 			}
 
@@ -441,8 +441,8 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 					devDeps[newPkg] = fmt.Sprintf("^%d.0.0", target)
 					modified = true
 				}
-			} else if issue.SuggestedVersion != "" && issue.Issue == "outdated" {
-				// Handle outdated packages with SuggestedVersion (e.g. NestJS packages)
+			} else if issue.SuggestedVersion != "" && (issue.Issue == "outdated" || issue.Issue == "outdated-latest") {
+				// Handle outdated packages with SuggestedVersion (including latest upgrades)
 				if _, ok := deps[issue.Name]; ok {
 					deps[issue.Name] = issue.SuggestedVersion
 					modified = true
@@ -542,10 +542,11 @@ func writePackageJsonPreservingOrder(pkgPath string, origData []byte, pkg map[st
 }
 
 // detectRequiredAwsV3Packages scans source files to determine which @aws-sdk packages are needed.
+// Uses import/require patterns to avoid false positives from string mentions (e.g. IAM policy ARNs).
 func detectRequiredAwsV3Packages(repoPath string) map[string]string {
 	pkgs := make(map[string]string)
 
-	// Walk source files looking for AWS service usage
+	// Walk source files looking for actual AWS SDK usage (imports or instantiation)
 	srcDir := filepath.Join(repoPath, "src")
 	filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -561,26 +562,28 @@ func detectRequiredAwsV3Packages(repoPath string) map[string]string {
 		}
 		content := string(data)
 
-		if strings.Contains(content, "DynamoDB") {
+		// Match actual SDK usage: imports, require(), or constructor calls like new AWS.DynamoDB
+		// Avoid matching IAM policy ARNs, comments, or plain string mentions
+		if matchesAwsUsage(content, "DynamoDB", "aws-sdk/clients/dynamodb", "new AWS.DynamoDB", "DynamoDB.DocumentClient") {
 			pkgs["@aws-sdk/client-dynamodb"] = "^3.600.0"
 			pkgs["@aws-sdk/lib-dynamodb"] = "^3.600.0"
 		}
-		if strings.Contains(content, "SQS") || strings.Contains(content, "sendMessage") {
+		if matchesAwsUsage(content, "SQS", "aws-sdk/clients/sqs", "new AWS.SQS", "SQS(") {
 			pkgs["@aws-sdk/client-sqs"] = "^3.600.0"
 		}
-		if strings.Contains(content, "SNS") || strings.Contains(content, "publish") {
+		if matchesAwsUsage(content, "SNS", "aws-sdk/clients/sns", "new AWS.SNS", "SNS(") {
 			pkgs["@aws-sdk/client-sns"] = "^3.600.0"
 		}
 		if strings.Contains(content, "StepFunctions") || strings.Contains(content, "startExecution") || strings.Contains(content, "SFNClient") || strings.Contains(content, "@aws-sdk/client-sfn") {
 			pkgs["@aws-sdk/client-sfn"] = "^3.600.0"
 		}
-		if strings.Contains(content, "S3") {
+		if matchesAwsUsage(content, "S3", "aws-sdk/clients/s3", "new AWS.S3", "S3(") {
 			pkgs["@aws-sdk/client-s3"] = "^3.600.0"
 		}
 		if strings.Contains(content, "SecretsManager") {
 			pkgs["@aws-sdk/client-secrets-manager"] = "^3.600.0"
 		}
-		if strings.Contains(content, "Lambda") {
+		if matchesAwsUsage(content, "Lambda", "aws-sdk/clients/lambda", "new AWS.Lambda", "Lambda(") {
 			pkgs["@aws-sdk/client-lambda"] = "^3.600.0"
 		}
 
@@ -588,4 +591,41 @@ func detectRequiredAwsV3Packages(repoPath string) map[string]string {
 	})
 
 	return pkgs
+}
+
+// matchesAwsUsage checks if a file actually uses an AWS service via import/require/instantiation,
+// filtering out false positives from IAM policy ARNs and plain string mentions.
+func matchesAwsUsage(content, serviceName string, patterns ...string) bool {
+	// Check for explicit patterns first (most reliable)
+	for _, p := range patterns {
+		if strings.Contains(content, p) {
+			return true
+		}
+	}
+
+	// Check for import/require of the service
+	// e.g. import { DynamoDB } from 'aws-sdk' or require('aws-sdk').DynamoDB
+	importPatterns := []string{
+		"import",
+		"require(",
+	}
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Skip comments
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		// Must be in an import/require context AND reference the service
+		for _, imp := range importPatterns {
+			if strings.Contains(trimmed, imp) && strings.Contains(trimmed, serviceName) {
+				return true
+			}
+		}
+		// Match constructor: new AWS.ServiceName or new ServiceName(
+		if strings.Contains(trimmed, "new") && strings.Contains(trimmed, serviceName) {
+			return true
+		}
+	}
+
+	return false
 }

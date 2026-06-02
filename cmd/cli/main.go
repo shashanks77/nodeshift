@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -84,7 +85,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&local, "local", "l", "", "Scan a local directory")
 	cmd.Flags().StringVarP(&owner, "owner", "o", "", "GitHub owner/org")
 	cmd.Flags().StringVarP(&repo, "repo", "r", "", "GitHub repo name")
-	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().IntVarP(&target, "target", "t", 0, "Target Node.js major version (0 = auto-detect latest LTS)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 
 	return cmd
@@ -99,6 +100,8 @@ func upgradeCmd() *cobra.Command {
 		llmURL      string
 		llmModel    string
 		llmProvider string
+		upgradeDeps bool
+		fixVulns    bool
 	)
 
 	cmd := &cobra.Command{
@@ -194,8 +197,8 @@ Use --dry-run to preview changes without pushing.`,
 			// Create GitHub client with resolved target
 			gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 
-			// Static analysis
-			issues, err := analyzer.Analyze(repoPath, target)
+			// Static analysis (+ registry lookup if upgradeDeps enabled)
+			issues, err := analyzer.AnalyzeWithOptions(repoPath, target, upgradeDeps)
 			if err != nil {
 				return err
 			}
@@ -356,6 +359,8 @@ Use --dry-run to preview changes without pushing.`,
 
 			// Phase 5: Vulnerability scan + fix
 			fmt.Println("\n  [AUDIT] Scanning for vulnerabilities...")
+			// Snapshot package.json before audit fix to detect major bumps later
+			preAuditPkg, _ := os.ReadFile(filepath.Join(repoPath, "package.json"))
 			auditResult := verify.RunAudit(repoPath)
 			vResult.Audit = auditResult
 			beforeCounts := verify.AuditSummary(auditResult.Before)
@@ -436,6 +441,22 @@ Use --dry-run to preview changes without pushing.`,
 				}
 			}
 
+			// Phase 4c: LLM codemod for packages major-bumped by audit fix
+			if fixVulns && llmProvider != "off" && preAuditPkg != nil {
+				majorBumped := llm.DetectMajorBumps(repoPath, preAuditPkg)
+				if len(majorBumped) > 0 {
+					fmt.Printf("\n  [LLM-CODEMOD] Detected %d package(s) with major version bumps from audit fix\n", len(majorBumped))
+					llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+					if err := llmClient.Ping(); err == nil {
+						postAuditCodemod := llm.FixDeprecatedAPIs(llmClient, repoPath, target, majorBumped)
+						if len(postAuditCodemod.FilesFixed) > 0 {
+							fmt.Printf("  [OK] LLM codemod: migrated %d file(s) for audit-bumped packages\n", len(postAuditCodemod.FilesFixed))
+							filesChanged = append(filesChanged, postAuditCodemod.FilesFixed...)
+						}
+					}
+				}
+			}
+
 			// Stamp new version onto detected configs for the PR body
 			targetStr := strconv.Itoa(target)
 			for i := range configs {
@@ -498,6 +519,8 @@ Use --dry-run to preview changes without pushing.`,
 	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (fallback if GitHub Models unavailable)")
 	cmd.Flags().StringVar(&llmModel, "llm-model", "", "LLM model override (default: auto-select per provider)")
 	cmd.Flags().StringVar(&llmProvider, "llm-provider", "auto", "LLM provider: auto|github|ollama (auto = GitHub Models primary, Ollama fallback)")
+	cmd.Flags().BoolVar(&upgradeDeps, "upgrade-deps", true, "Upgrade all dependencies to latest stable versions")
+	cmd.Flags().BoolVar(&fixVulns, "fix-vulns", true, "Aggressively resolve vulnerabilities (npm audit fix --force + LLM)")
 
 	return cmd
 }
@@ -627,7 +650,7 @@ Use --group to process a specific group by name.`,
 	}
 
 	cmd.Flags().StringVarP(&reposFile, "file", "f", "repos.json", "JSON file with repo list")
-	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().IntVarP(&target, "target", "t", 0, "Target Node.js major version (0 = auto-detect latest LTS)")
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Default base branch (overridden per-repo)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
