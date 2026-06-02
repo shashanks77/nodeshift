@@ -1,0 +1,11 @@
+The following TypeScript file has compilation errors after upgrading to Node.js %d.
+
+File: %s
+```
+%s
+```
+
+Errors:
+%s
+%s
+Return the complete fixed file content.

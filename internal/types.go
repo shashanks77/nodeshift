@@ -19,13 +19,28 @@ type DependencyIssue struct {
 	SuggestedVersion string `json:"suggestedVersion,omitempty"`
 }
 
+// VerifySummary holds the verification phase results for the PR body.
+type VerifySummary struct {
+	NpmInstallOk    bool   `json:"npmInstallOk"`
+	TscOk           bool   `json:"tscOk"`
+	TscErrorCount   int    `json:"tscErrorCount,omitempty"`
+	TscFixedByLLM   bool   `json:"tscFixedByLLM,omitempty"`
+	TestsOk         bool   `json:"testsOk"`
+	RuntimeOk       bool   `json:"runtimeOk"`
+	RuntimeSkipped  bool   `json:"runtimeSkipped,omitempty"`
+	RuntimeError    string `json:"runtimeError,omitempty"`
+	AuditBefore     int    `json:"auditBefore"`
+	AuditAfter      int    `json:"auditAfter"`
+	AuditFixApplied bool   `json:"auditFixApplied"`
+}
+
 // UpgradeReport summarises the upgrade for PR description and logging.
 type UpgradeReport struct {
 	Repo             string               `json:"repo"`
 	DetectedConfigs  []DetectedNodeConfig `json:"detectedConfigs"`
 	DependencyIssues []DependencyIssue    `json:"dependencyIssues"`
 	FilesChanged     []string             `json:"filesChanged"`
-	CodemodsApplied  []string             `json:"codemodsApplied,omitempty"`
+	Verify           *VerifySummary       `json:"verify,omitempty"`
 }
 
 // RepoEntry is one repository to process (batch mode).
@@ -34,12 +49,20 @@ type RepoEntry struct {
 	Name       string `json:"name,omitempty"`
 	URL        string `json:"url,omitempty"`
 	BaseBranch string `json:"baseBranch,omitempty"`
+	Disabled   bool   `json:"disabled,omitempty"`
+}
+
+// RepoGroup is a named group of repositories with a shared schedule.
+type RepoGroup struct {
+	Group    string      `json:"group"`
+	Schedule int         `json:"schedule"` // Day of month (1-28) to run this group
+	Repos    []RepoEntry `json:"repos"`
 }
 
 // BatchResult holds the outcome of processing one repo in batch mode.
 type BatchResult struct {
 	Repo   string `json:"repo"`
-	Status string `json:"status"` // "success", "up-to-date", "error"
+	Status string `json:"status"` // "success", "up-to-date", "error", "skipped"
 	PRUrl  string `json:"prUrl,omitempty"`
 	Error  string `json:"error,omitempty"`
 }

@@ -36,6 +36,23 @@ func Transform(repoPath string, configs []types.DetectedNodeConfig, targetVersio
 		}
 	}
 
+	// Fix tsconfig.json extends and compilerOptions for Node upgrade
+	if ok, err := TransformTsconfigExtends(repoPath, targetVersion); err != nil {
+		return changed, fmt.Errorf("transform tsconfig.json: %w", err)
+	} else if ok {
+		// Only add if not already in changed list
+		hasTsconfig := false
+		for _, f := range changed {
+			if f == "tsconfig.json" {
+				hasTsconfig = true
+				break
+			}
+		}
+		if !hasTsconfig {
+			changed = append(changed, "tsconfig.json")
+		}
+	}
+
 	return changed, nil
 }
 
@@ -66,8 +83,14 @@ func transformServerless(repoPath string, cfg types.DetectedNodeConfig, target i
 		return false, err
 	}
 
+	// Cap serverless runtime at nodejs20.x — AWS Lambda doesn't support newer runtimes yet
+	lambdaTarget := target
+	if lambdaTarget > 20 {
+		lambdaTarget = 20
+	}
+
 	old := "nodejs" + cfg.CurrentVersion + ".x"
-	newRuntime := "nodejs" + strconv.Itoa(target) + ".x"
+	newRuntime := "nodejs" + strconv.Itoa(lambdaTarget) + ".x"
 	content := string(data)
 
 	if !strings.Contains(content, old) {
@@ -87,9 +110,22 @@ func transformDockerfile(repoPath string, cfg types.DetectedNodeConfig, target i
 		return false, err
 	}
 
-	re := regexp.MustCompile(`(?i)(FROM\s+node:)(\d+)`)
 	content := string(data)
-	updated := re.ReplaceAllString(content, "${1}"+strconv.Itoa(target))
+
+	// Replace node version and normalize Alpine/distro tag
+	// Matches: node:14-alpine3.12, node:20-slim, node:18, node:20-bullseye, etc.
+	re := regexp.MustCompile(`(?i)(FROM\s+node:)\d+(-alpine[\d.]*|-slim|-bullseye|-bookworm)?`)
+	updated := re.ReplaceAllStringFunc(content, func(match string) string {
+		parts := re.FindStringSubmatch(match)
+		prefix := parts[1] // "FROM node:"
+		suffix := parts[2] // "-alpine3.12" or "-slim" or ""
+
+		// Update Alpine to just "-alpine" (uses latest supported Alpine for the Node version)
+		if strings.HasPrefix(suffix, "-alpine") {
+			suffix = "-alpine"
+		}
+		return prefix + strconv.Itoa(target) + suffix
+	})
 
 	if updated == content {
 		return false, nil
@@ -122,11 +158,7 @@ func transformPackageEngines(repoPath string, cfg types.DetectedNodeConfig, targ
 	engines["node"] = fmt.Sprintf(">=%d.0.0", target)
 	pkg["engines"] = engines
 
-	out, err := json.MarshalIndent(pkg, "", "  ")
-	if err != nil {
-		return false, err
-	}
-	return true, os.WriteFile(fullPath, append(out, '\n'), 0644)
+	return true, writePackageJsonPreservingOrder(fullPath, data, pkg)
 }
 
 func transformCIWorkflow(repoPath string, cfg types.DetectedNodeConfig, target int) (bool, error) {
@@ -146,13 +178,13 @@ func transformCIWorkflow(repoPath string, cfg types.DetectedNodeConfig, target i
 	return true, os.WriteFile(fullPath, []byte(updated), 0644)
 }
 
-// nodeVersionToESTarget maps Node major version to the best ES target
+// nodeVersionToESTarget maps Node major version to the best ES target.
+// TypeScript 5.x supports up to ES2022 as a named target; for newer Node
+// versions we use ESNext which enables all available ES features.
 func nodeVersionToESTarget(nodeVersion int) string {
 	switch {
-	case nodeVersion >= 24:
-		return "ES2024"
 	case nodeVersion >= 22:
-		return "ES2023"
+		return "ESNext"
 	case nodeVersion >= 20:
 		return "ES2022"
 	case nodeVersion >= 18:
@@ -182,6 +214,48 @@ func transformTsconfigTarget(repoPath string, cfg types.DetectedNodeConfig, targ
 		return false, nil
 	}
 	return true, os.WriteFile(fullPath, []byte(updated), 0644)
+}
+
+// TransformTsconfigExtends fixes tsconfig.json "extends" field to reference the correct
+// @tsconfig/nodeXX package, and ensures essential compilerOptions are set.
+func TransformTsconfigExtends(repoPath string, target int) (bool, error) {
+	tscPath := filepath.Join(repoPath, "tsconfig.json")
+	data, err := os.ReadFile(tscPath)
+	if err != nil {
+		return false, nil // no tsconfig.json
+	}
+
+	content := string(data)
+	modified := false
+
+	// Fix extends: @tsconfig/nodeXX → @tsconfig/node{target}
+	reExtends := regexp.MustCompile(`("extends"\s*:\s*)"@tsconfig/node\d+"`)
+	newExtends := fmt.Sprintf(`${1}"@tsconfig/node%d"`, target)
+	updated := reExtends.ReplaceAllString(content, newExtends)
+	if updated != content {
+		content = updated
+		modified = true
+	}
+
+	// Ensure esModuleInterop is set
+	if !strings.Contains(content, "esModuleInterop") {
+		reOpts := regexp.MustCompile(`("compilerOptions"\s*:\s*\{)`)
+		content = reOpts.ReplaceAllString(content, "${1}\n    \"esModuleInterop\": true,")
+		modified = true
+	}
+
+	// Ensure skipLibCheck is set (avoids node_modules type errors)
+	if !strings.Contains(content, "skipLibCheck") {
+		reOpts := regexp.MustCompile(`("compilerOptions"\s*:\s*\{)`)
+		content = reOpts.ReplaceAllString(content, "${1}\n    \"skipLibCheck\": true,")
+		modified = true
+	}
+
+	if !modified {
+		return false, nil
+	}
+
+	return true, os.WriteFile(tscPath, []byte(content), 0644)
 }
 
 func transformServerlessPseudoParams(repoPath string, cfg types.DetectedNodeConfig) (bool, error) {
@@ -287,7 +361,7 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 
 		case "typescript":
 			if _, ok := devDeps["typescript"]; ok {
-				devDeps["typescript"] = "^5.4.0"
+				devDeps["typescript"] = issue.SuggestedVersion
 				modified = true
 			}
 
@@ -352,6 +426,32 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 			delete(deps, "serverless-pseudo-parameters")
 			delete(devDeps, "serverless-pseudo-parameters")
 			modified = true
+
+		default:
+			// Handle @tsconfig/nodeXX replacement
+			if strings.HasPrefix(issue.Name, "@tsconfig/node") && strings.HasPrefix(issue.SuggestedVersion, "@tsconfig/node") {
+				newPkg := issue.SuggestedVersion
+				if _, ok := deps[issue.Name]; ok {
+					delete(deps, issue.Name)
+					deps[newPkg] = fmt.Sprintf("^%d.0.0", target)
+					modified = true
+				}
+				if _, ok := devDeps[issue.Name]; ok {
+					delete(devDeps, issue.Name)
+					devDeps[newPkg] = fmt.Sprintf("^%d.0.0", target)
+					modified = true
+				}
+			} else if issue.SuggestedVersion != "" && (issue.Issue == "outdated" || issue.Issue == "outdated-latest") {
+				// Handle outdated packages with SuggestedVersion (including latest upgrades)
+				if _, ok := deps[issue.Name]; ok {
+					deps[issue.Name] = issue.SuggestedVersion
+					modified = true
+				}
+				if _, ok := devDeps[issue.Name]; ok {
+					devDeps[issue.Name] = issue.SuggestedVersion
+					modified = true
+				}
+			}
 		}
 	}
 
@@ -371,18 +471,82 @@ func TransformPackageDeps(repoPath string, issues []types.DependencyIssue, targe
 	pkg["dependencies"] = deps
 	pkg["devDependencies"] = devDeps
 
-	out, err := json.MarshalIndent(pkg, "", "  ")
-	if err != nil {
-		return false, err
+	// Write back preserving original key order using text-based replacement
+	return true, writePackageJsonPreservingOrder(pkgPath, data, pkg)
+}
+
+// writePackageJsonPreservingOrder writes changes to package.json while preserving
+// the original key ordering. It replaces version strings in-place using regex.
+func writePackageJsonPreservingOrder(pkgPath string, origData []byte, pkg map[string]interface{}) error {
+	content := string(origData)
+
+	// Helper to update a dependency section in-place
+	updateSection := func(sectionName string) {
+		section, ok := pkg[sectionName].(map[string]interface{})
+		if !ok {
+			return
+		}
+		for name, ver := range section {
+			verStr, ok := ver.(string)
+			if !ok {
+				continue
+			}
+			// Match "pkg-name": "any-version" and replace just the version
+			re := regexp.MustCompile(`("` + regexp.QuoteMeta(name) + `"\s*:\s*)"[^"]*"`)
+			content = re.ReplaceAllString(content, `${1}"`+verStr+`"`)
+		}
 	}
-	return true, os.WriteFile(pkgPath, append(out, '\n'), 0644)
+
+	updateSection("dependencies")
+	updateSection("devDependencies")
+
+	// Handle engines.node
+	if engines, ok := pkg["engines"].(map[string]interface{}); ok {
+		if nodeVer, ok := engines["node"].(string); ok {
+			re := regexp.MustCompile(`("node"\s*:\s*)"[^"]*"`)
+			content = re.ReplaceAllString(content, `${1}"`+nodeVer+`"`)
+		}
+	}
+
+	// Handle additions: packages that are in pkg but not in original
+	var origPkg map[string]interface{}
+	json.Unmarshal(origData, &origPkg)
+
+	for _, sectionName := range []string{"dependencies", "devDependencies"} {
+		newSection, _ := pkg[sectionName].(map[string]interface{})
+		origSection, _ := origPkg[sectionName].(map[string]interface{})
+		if origSection == nil {
+			origSection = make(map[string]interface{})
+		}
+		for name, ver := range newSection {
+			if _, exists := origSection[name]; !exists {
+				// Need to add this package — find the section and insert
+				verStr, _ := ver.(string)
+				entry := fmt.Sprintf("    \"%s\": \"%s\"", name, verStr)
+				sectionRe := regexp.MustCompile(`("` + sectionName + `"\s*:\s*\{)`)
+				content = sectionRe.ReplaceAllString(content, "${1}\n"+entry+",")
+			}
+		}
+
+		// Handle removals: packages in original but not in new
+		for name := range origSection {
+			if _, exists := newSection[name]; !exists {
+				// Remove the entire line including trailing newline
+				removeRe := regexp.MustCompile(`[ \t]*"` + regexp.QuoteMeta(name) + `"\s*:\s*"[^"]*",?\n`)
+				content = removeRe.ReplaceAllString(content, "")
+			}
+		}
+	}
+
+	return os.WriteFile(pkgPath, []byte(content), 0644)
 }
 
 // detectRequiredAwsV3Packages scans source files to determine which @aws-sdk packages are needed.
+// Uses import/require patterns to avoid false positives from string mentions (e.g. IAM policy ARNs).
 func detectRequiredAwsV3Packages(repoPath string) map[string]string {
 	pkgs := make(map[string]string)
 
-	// Walk source files looking for AWS service usage
+	// Walk source files looking for actual AWS SDK usage (imports or instantiation)
 	srcDir := filepath.Join(repoPath, "src")
 	filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -398,26 +562,28 @@ func detectRequiredAwsV3Packages(repoPath string) map[string]string {
 		}
 		content := string(data)
 
-		if strings.Contains(content, "DynamoDB") {
+		// Match actual SDK usage: imports, require(), or constructor calls like new AWS.DynamoDB
+		// Avoid matching IAM policy ARNs, comments, or plain string mentions
+		if matchesAwsUsage(content, "DynamoDB", "aws-sdk/clients/dynamodb", "new AWS.DynamoDB", "DynamoDB.DocumentClient") {
 			pkgs["@aws-sdk/client-dynamodb"] = "^3.600.0"
 			pkgs["@aws-sdk/lib-dynamodb"] = "^3.600.0"
 		}
-		if strings.Contains(content, "SQS") || strings.Contains(content, "sendMessage") {
+		if matchesAwsUsage(content, "SQS", "aws-sdk/clients/sqs", "new AWS.SQS", "SQS(") {
 			pkgs["@aws-sdk/client-sqs"] = "^3.600.0"
 		}
-		if strings.Contains(content, "SNS") || strings.Contains(content, "publish") {
+		if matchesAwsUsage(content, "SNS", "aws-sdk/clients/sns", "new AWS.SNS", "SNS(") {
 			pkgs["@aws-sdk/client-sns"] = "^3.600.0"
 		}
 		if strings.Contains(content, "StepFunctions") || strings.Contains(content, "startExecution") || strings.Contains(content, "SFNClient") || strings.Contains(content, "@aws-sdk/client-sfn") {
 			pkgs["@aws-sdk/client-sfn"] = "^3.600.0"
 		}
-		if strings.Contains(content, "S3") {
+		if matchesAwsUsage(content, "S3", "aws-sdk/clients/s3", "new AWS.S3", "S3(") {
 			pkgs["@aws-sdk/client-s3"] = "^3.600.0"
 		}
 		if strings.Contains(content, "SecretsManager") {
 			pkgs["@aws-sdk/client-secrets-manager"] = "^3.600.0"
 		}
-		if strings.Contains(content, "Lambda") {
+		if matchesAwsUsage(content, "Lambda", "aws-sdk/clients/lambda", "new AWS.Lambda", "Lambda(") {
 			pkgs["@aws-sdk/client-lambda"] = "^3.600.0"
 		}
 
@@ -425,4 +591,41 @@ func detectRequiredAwsV3Packages(repoPath string) map[string]string {
 	})
 
 	return pkgs
+}
+
+// matchesAwsUsage checks if a file actually uses an AWS service via import/require/instantiation,
+// filtering out false positives from IAM policy ARNs and plain string mentions.
+func matchesAwsUsage(content, serviceName string, patterns ...string) bool {
+	// Check for explicit patterns first (most reliable)
+	for _, p := range patterns {
+		if strings.Contains(content, p) {
+			return true
+		}
+	}
+
+	// Check for import/require of the service
+	// e.g. import { DynamoDB } from 'aws-sdk' or require('aws-sdk').DynamoDB
+	importPatterns := []string{
+		"import",
+		"require(",
+	}
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Skip comments
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		// Must be in an import/require context AND reference the service
+		for _, imp := range importPatterns {
+			if strings.Contains(trimmed, imp) && strings.Contains(trimmed, serviceName) {
+				return true
+			}
+		}
+		// Match constructor: new AWS.ServiceName or new ServiceName(
+		if strings.Contains(trimmed, "new") && strings.Contains(trimmed, serviceName) {
+			return true
+		}
+	}
+
+	return false
 }

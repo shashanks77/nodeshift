@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,9 +14,9 @@ import (
 
 	types "github.com/your-org/nodeshift/internal"
 	"github.com/your-org/nodeshift/internal/analyzer"
-	"github.com/your-org/nodeshift/internal/codemod"
 	"github.com/your-org/nodeshift/internal/detector"
 	ghclient "github.com/your-org/nodeshift/internal/github"
+	"github.com/your-org/nodeshift/internal/llm"
 	"github.com/your-org/nodeshift/internal/transformer"
 	"github.com/your-org/nodeshift/internal/verify"
 )
@@ -29,6 +30,7 @@ func main() {
 	rootCmd.AddCommand(scanCmd())
 	rootCmd.AddCommand(upgradeCmd())
 	rootCmd.AddCommand(batchCmd())
+	rootCmd.AddCommand(docsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -83,7 +85,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&local, "local", "l", "", "Scan a local directory")
 	cmd.Flags().StringVarP(&owner, "owner", "o", "", "GitHub owner/org")
 	cmd.Flags().StringVarP(&repo, "repo", "r", "", "GitHub repo name")
-	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().IntVarP(&target, "target", "t", 0, "Target Node.js major version (0 = auto-detect latest LTS)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 
 	return cmd
@@ -91,12 +93,15 @@ func scanCmd() *cobra.Command {
 
 func upgradeCmd() *cobra.Command {
 	var (
-		target     int
-		baseBranch string
-		token      string
-		dryRun     bool
-		codemods   bool
-		engineDir  string
+		target      int
+		baseBranch  string
+		token       string
+		dryRun      bool
+		llmURL      string
+		llmModel    string
+		llmProvider string
+		upgradeDeps bool
+		fixVulns    bool
 	)
 
 	cmd := &cobra.Command{
@@ -157,9 +162,8 @@ Use --dry-run to preview changes without pushing.`,
 
 			canPR := owner != "" && repo != "" && token != "" && !dryRun
 
-			gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
-
 			if !isLocal {
+				gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 				var err error
 				repoPath, err = gh.Clone()
 				if err != nil {
@@ -179,9 +183,44 @@ Use --dry-run to preview changes without pushing.`,
 				return err
 			}
 
-			issues, err := analyzer.Analyze(repoPath, target)
+			// Auto-detect latest stable Node version if target is 0
+			if target == 0 {
+				fmt.Println("  [DETECT] Fetching latest stable Node.js version...")
+				latest, err := analyzer.FetchLatestStableNode()
+				if err != nil {
+					return fmt.Errorf("auto-detect node version: %w", err)
+				}
+				target = latest
+				fmt.Printf("  [DETECT] Latest stable: Node.js %d\n", target)
+			}
+
+			// Create GitHub client with resolved target
+			gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
+
+			// Static analysis (+ registry lookup if upgradeDeps enabled)
+			issues, err := analyzer.AnalyzeWithOptions(repoPath, target, upgradeDeps)
 			if err != nil {
 				return err
+			}
+
+			// LLM-based analysis (merges with static analysis)
+			if llmProvider != "off" {
+				llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+				if err := llmClient.Ping(); err == nil {
+					llmIssues, _ := analyzer.AnalyzeWithLLM(llmClient, repoPath, target)
+					if len(llmIssues) > 0 {
+						// Merge: add LLM issues that aren't already detected statically
+						existing := make(map[string]bool)
+						for _, i := range issues {
+							existing[i.Name] = true
+						}
+						for _, li := range llmIssues {
+							if !existing[li.Name] {
+								issues = append(issues, li)
+							}
+						}
+					}
+				}
 			}
 
 			var branch string
@@ -192,44 +231,37 @@ Use --dry-run to preview changes without pushing.`,
 				}
 			}
 
-			// Phase 1: AST codemods (TypeScript engine for code-level changes)
-			// Must run BEFORE package.json changes so shouldRun() still sees aws-sdk
 			var filesChanged []string
-			var codemodsApplied []string
-			if codemods {
-				engine := codemod.NewEngine(engineDir)
-				resp, cErr := engine.Run(repoPath, target, nil)
-				if cErr != nil {
-					fmt.Fprintf(os.Stderr, "Codemod engine error: %v\n", cErr)
-				} else {
-					for _, r := range resp.Results {
-						if r.Success {
-							fmt.Printf("  [OK] Codemod %s: %d files modified\n", r.Name, len(r.FilesModified))
-							if len(r.FilesModified) > 0 {
-								codemodsApplied = append(codemodsApplied, r.Name)
-							}
-						} else {
-							fmt.Printf("  [FAIL] Codemod %s: %s\n", r.Name, r.Error)
-						}
-					}
-					filesChanged = append(filesChanged, resp.TotalFilesModified...)
-				}
-			}
 
-			// Phase 2: Config transforms + package.json upgrades (Go)
+			// Phase 1: Config transforms + package.json upgrades
 			configChanged, err := transformer.Transform(repoPath, configs, target, issues)
 			if err != nil {
 				return err
 			}
 			filesChanged = append(filesChanged, configChanged...)
 
-			// Phase 2b: Serverless Framework v3 compatibility fixes
+			// Phase 1b: Serverless Framework v3 compatibility fixes
 			slsChanged, err := transformer.TransformServerlessV3Compat(repoPath, target)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  [WARN] Serverless v3 compat: %v\n", err)
 			} else if len(slsChanged) > 0 {
 				fmt.Printf("  [OK] Serverless v3 compat: %v\n", slsChanged)
 				filesChanged = append(filesChanged, slsChanged...)
+			}
+
+			// Phase 2: LLM-powered API migration for upgraded dependencies
+			if llmProvider != "off" && len(issues) > 0 {
+				llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+				if err := llmClient.Ping(); err != nil {
+					fmt.Printf("  [LLM-CODEMOD] Cannot reach LLM: %v\n", err)
+				} else {
+					fmt.Printf("  [LLM] Using provider: %s\n", llmClient.ActiveProvider())
+					codemodResult := llm.FixDeprecatedAPIs(llmClient, repoPath, target, issues)
+					if len(codemodResult.FilesFixed) > 0 {
+						fmt.Printf("  [OK] LLM codemod: migrated %d file(s)\n", len(codemodResult.FilesFixed))
+						filesChanged = append(filesChanged, codemodResult.FilesFixed...)
+					}
+				}
 			}
 
 			if len(filesChanged) == 0 {
@@ -245,6 +277,7 @@ Use --dry-run to preview changes without pushing.`,
 				fmt.Fprintf(os.Stderr, "  [WARN] npm install failed: %s\n", vResult.NpmErrors)
 			} else {
 				fmt.Println("  [OK] npm install succeeded")
+				filesChanged = append(filesChanged, "package-lock.json")
 				if len(vResult.AutoFixed) > 0 {
 					fmt.Printf("  [FIX] Auto-fixed: %s\n", vResult.AutoFixed)
 					filesChanged = append(filesChanged, vResult.AutoFixed...)
@@ -274,10 +307,60 @@ Use --dry-run to preview changes without pushing.`,
 						}
 					}
 				}
+
+				// Phase 3b: LLM-assisted fix for tsc errors and test failures
+				if llmProvider != "off" && (!vResult.TscOk || !vResult.TestsOk) {
+					llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+					if err := llmClient.Ping(); err != nil {
+						fmt.Printf("  [LLM] No LLM provider available: %v\n", err)
+					} else {
+						fmt.Printf("  [LLM] Connected via %s\n", llmClient.ActiveProvider())
+
+						if !vResult.TscOk && len(vResult.TscErrors) > 0 {
+							fmt.Printf("  [LLM] Fixing %d tsc error(s)...\n", len(vResult.TscErrors))
+							tscResult := llm.FixTscErrors(llmClient, repoPath, target)
+							filesChanged = append(filesChanged, tscResult.FilesFixed...)
+							if len(tscResult.TscRemaining) == 0 {
+								fmt.Println("  [OK] All tsc errors fixed by LLM")
+								vResult.TscOk = true
+								vResult.TscErrors = nil
+							} else {
+								fmt.Printf("  [WARN] %d tsc error(s) remain after %d LLM attempts\n", len(tscResult.TscRemaining), tscResult.AttemptsMade)
+								vResult.TscErrors = tscResult.TscRemaining
+							}
+						}
+
+						if !vResult.TestsOk && len(vResult.TestErrors) > 0 {
+							fmt.Printf("  [LLM] Fixing %d test failure(s)...\n", len(vResult.TestErrors))
+							testResult := llm.FixTestErrors(llmClient, repoPath, target)
+							filesChanged = append(filesChanged, testResult.FilesFixed...)
+							if len(testResult.TestRemaining) == 0 {
+								fmt.Println("  [OK] All test failures fixed by LLM")
+								vResult.TestsOk = true
+								vResult.TestErrors = nil
+							} else {
+								fmt.Printf("  [WARN] %d test failure(s) remain after %d LLM attempts\n", len(testResult.TestRemaining), testResult.AttemptsMade)
+							}
+						}
+					}
+				}
 			}
 
-			// Phase 4: Vulnerability scan + fix
+			// Phase 4: Runtime verification — start app and check health
+			fmt.Println("\n  [RUNTIME] Verifying application starts...")
+			rtResult := verify.RunRuntimeCheck(repoPath)
+			if !rtResult.Started {
+				fmt.Printf("  [SKIP] Runtime check: %s\n", rtResult.Error)
+			} else if rtResult.Healthy {
+				fmt.Println("  [OK] Application starts and responds to requests")
+			} else {
+				fmt.Printf("  [WARN] Runtime check: %s\n", rtResult.Error)
+			}
+
+			// Phase 5: Vulnerability scan + fix
 			fmt.Println("\n  [AUDIT] Scanning for vulnerabilities...")
+			// Snapshot package.json before audit fix to detect major bumps later
+			preAuditPkg, _ := os.ReadFile(filepath.Join(repoPath, "package.json"))
 			auditResult := verify.RunAudit(repoPath)
 			vResult.Audit = auditResult
 			beforeCounts := verify.AuditSummary(auditResult.Before)
@@ -334,6 +417,46 @@ Use --dry-run to preview changes without pushing.`,
 				}
 			}
 
+			// Phase 4b: LLM-assisted vulnerability resolution
+			if llmProvider != "off" && len(vResult.Audit.After) > 0 {
+				llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+				if err := llmClient.Ping(); err == nil {
+					fmt.Printf("\n  [LLM] Attempting to resolve %d remaining vulnerabilities...\n", len(vResult.Audit.After))
+					vulnResult := llm.FixVulnerabilities(llmClient, repoPath, vResult.Audit.After)
+					filesChanged = append(filesChanged, vulnResult.FilesFixed...)
+					if len(vulnResult.FilesFixed) > 0 {
+						fmt.Printf("  [LLM] Modified %d file(s) to resolve vulnerabilities\n", len(vulnResult.FilesFixed))
+						// Re-run audit to check remaining
+						reAudit := verify.RunAudit(repoPath)
+						remaining := len(reAudit.After)
+						if remaining == 0 {
+							fmt.Println("  [OK] All vulnerabilities resolved by LLM")
+						} else {
+							fmt.Printf("  [WARN] %d vulnerabilities still remain\n", remaining)
+						}
+						vResult.Audit.After = reAudit.After
+					} else {
+						fmt.Println("  [LLM] No vulnerability fixes could be applied")
+					}
+				}
+			}
+
+			// Phase 4c: LLM codemod for packages major-bumped by audit fix
+			if fixVulns && llmProvider != "off" && preAuditPkg != nil {
+				majorBumped := llm.DetectMajorBumps(repoPath, preAuditPkg)
+				if len(majorBumped) > 0 {
+					fmt.Printf("\n  [LLM-CODEMOD] Detected %d package(s) with major version bumps from audit fix\n", len(majorBumped))
+					llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+					if err := llmClient.Ping(); err == nil {
+						postAuditCodemod := llm.FixDeprecatedAPIs(llmClient, repoPath, target, majorBumped)
+						if len(postAuditCodemod.FilesFixed) > 0 {
+							fmt.Printf("  [OK] LLM codemod: migrated %d file(s) for audit-bumped packages\n", len(postAuditCodemod.FilesFixed))
+							filesChanged = append(filesChanged, postAuditCodemod.FilesFixed...)
+						}
+					}
+				}
+			}
+
 			// Stamp new version onto detected configs for the PR body
 			targetStr := strconv.Itoa(target)
 			for i := range configs {
@@ -358,7 +481,19 @@ Use --dry-run to preview changes without pushing.`,
 					DetectedConfigs:  configs,
 					DependencyIssues: issues,
 					FilesChanged:     filesChanged,
-					CodemodsApplied:  codemodsApplied,
+					Verify: &types.VerifySummary{
+						NpmInstallOk:    vResult.NpmInstallOk,
+						TscOk:           vResult.TscOk,
+						TscErrorCount:   len(vResult.TscErrors),
+						TscFixedByLLM:   !vResult.TscOk && len(vResult.TscErrors) > 0,
+						TestsOk:         vResult.TestsOk,
+						RuntimeOk:       vResult.RuntimeOk,
+						RuntimeSkipped:  !vResult.Runtime.Started,
+						RuntimeError:    vResult.Runtime.Error,
+						AuditBefore:     len(vResult.Audit.Before),
+						AuditAfter:      len(vResult.Audit.After),
+						AuditFixApplied: vResult.Audit.FixApplied,
+					},
 				}
 				prURL, err := gh.CreatePR(report, branch)
 				if err != nil {
@@ -377,58 +512,84 @@ Use --dry-run to preview changes without pushing.`,
 		},
 	}
 
-	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().IntVarP(&target, "target", "t", 0, "Target Node.js major version (0 = auto-detect latest LTS)")
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Base branch for PR")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().BoolVar(&codemods, "codemods", false, "Run AST codemods (requires Node.js)")
-	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
+	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (fallback if GitHub Models unavailable)")
+	cmd.Flags().StringVar(&llmModel, "llm-model", "", "LLM model override (default: auto-select per provider)")
+	cmd.Flags().StringVar(&llmProvider, "llm-provider", "auto", "LLM provider: auto|github|ollama (auto = GitHub Models primary, Ollama fallback)")
+	cmd.Flags().BoolVar(&upgradeDeps, "upgrade-deps", true, "Upgrade all dependencies to latest stable versions")
+	cmd.Flags().BoolVar(&fixVulns, "fix-vulns", true, "Aggressively resolve vulnerabilities (npm audit fix --force + LLM)")
 
 	return cmd
 }
 
 func batchCmd() *cobra.Command {
 	var (
-		target     int
-		baseBranch string
-		token      string
-		dryRun     bool
-		codemods   bool
-		engineDir  string
-		reposFile  string
+		target      int
+		baseBranch  string
+		token       string
+		dryRun      bool
+		reposFile   string
+		llmURL      string
+		llmModel    string
+		llmProvider string
+		scheduled   bool
+		group       string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "batch",
 		Short: "Upgrade multiple repos from a JSON file",
-		Long: `Process multiple repositories in sequence. Provide a JSON file with:
+		Long: `Process multiple repositories in sequence. Supports two JSON formats:
+
+Grouped format (recommended for company-scale):
 [
-  {"url": "https://github.com/org/repo1.git", "baseBranch": "develop"},
-  {"url": "https://github.com/org/repo2.git"},
-  {"owner": "org", "name": "repo3", "baseBranch": "main"}
+  {
+    "group": "fms",
+    "schedule": 1,
+    "repos": [
+      {"url": "https://github.com/org/repo1.git", "baseBranch": "main"}
+    ]
+  }
 ]
 
-Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summary table.`,
+Flat format (backward compatible):
+[
+  {"url": "https://github.com/org/repo1.git", "baseBranch": "develop"}
+]
+
+Use --scheduled to only process groups whose schedule matches today's day of month.
+Use --group to process a specific group by name.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Read repo list first (to check schedule before requiring token)
+			data, err := os.ReadFile(reposFile)
+			if err != nil {
+				return fmt.Errorf("cannot read repos file %s: %w", reposFile, err)
+			}
+
+			repos, err := resolveRepos(data, scheduled, group)
+			if err != nil {
+				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
+			}
+
+			if len(repos) == 0 {
+				if scheduled {
+					fmt.Printf("No groups scheduled for today (day %d). Nothing to do.\n", time.Now().Day())
+				} else if group != "" {
+					fmt.Printf("No repos found in group %q.\n", group)
+				} else {
+					return fmt.Errorf("no repos found in %s", reposFile)
+				}
+				return nil
+			}
+
 			if token == "" {
 				token = os.Getenv("GITHUB_TOKEN")
 			}
 			if token == "" {
 				return fmt.Errorf("GITHUB_TOKEN required for batch mode (set in .env or environment)")
-			}
-
-			// Read repo list
-			var repos []types.RepoEntry
-			data, err := os.ReadFile(reposFile)
-			if err != nil {
-				return fmt.Errorf("cannot read repos file %s: %w", reposFile, err)
-			}
-			if err := json.Unmarshal(data, &repos); err != nil {
-				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
-			}
-
-			if len(repos) == 0 {
-				return fmt.Errorf("no repos found in %s", reposFile)
 			}
 
 			fmt.Printf("\n=== NODESHIFT BATCH: %d repos, target Node %d ===\n\n", len(repos), target)
@@ -459,7 +620,7 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 				fmt.Printf("━━━ [%d/%d] %s (base: %s) ━━━\n", i+1, len(repos), repoLabel, base)
 				start := time.Now()
 
-				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, codemods, engineDir)
+				result := processSingleRepo(token, repoURL, owner, repo, base, target, dryRun, llmProvider, llmURL, llmModel)
 				result.Repo = repoLabel
 
 				elapsed := time.Since(start).Round(time.Second)
@@ -489,18 +650,179 @@ Each repo is cloned, upgraded, and a PR is raised. Results are printed as a summ
 	}
 
 	cmd.Flags().StringVarP(&reposFile, "file", "f", "repos.json", "JSON file with repo list")
-	cmd.Flags().IntVarP(&target, "target", "t", 24, "Target Node.js major version")
+	cmd.Flags().IntVarP(&target, "target", "t", 0, "Target Node.js major version (0 = auto-detect latest LTS)")
 	cmd.Flags().StringVarP(&baseBranch, "base", "b", "master", "Default base branch (overridden per-repo)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without pushing")
-	cmd.Flags().BoolVar(&codemods, "codemods", true, "Run AST codemods (disable with --codemods=false)")
-	cmd.Flags().StringVar(&engineDir, "engine-dir", "./codemod-engine", "Path to the codemod engine")
+	cmd.Flags().StringVar(&llmURL, "llm-url", "", "Ollama API base URL (fallback if GitHub Models unavailable)")
+	cmd.Flags().StringVar(&llmModel, "llm-model", "", "LLM model override (default: auto-select per provider)")
+	cmd.Flags().StringVar(&llmProvider, "llm-provider", "auto", "LLM provider: auto|github|ollama (auto = GitHub Models primary, Ollama fallback)")
+	cmd.Flags().BoolVar(&scheduled, "scheduled", false, "Only process groups whose schedule matches today's day of month")
+	cmd.Flags().StringVarP(&group, "group", "g", "", "Process only a specific group by name")
 
 	return cmd
 }
 
+func docsCmd() *cobra.Command {
+	var reposFile string
+	var readmePath string
+
+	cmd := &cobra.Command{
+		Use:   "docs",
+		Short: "Regenerate README scheduling table from repos.json",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(reposFile)
+			if err != nil {
+				return fmt.Errorf("cannot read %s: %w", reposFile, err)
+			}
+
+			var groups []types.RepoGroup
+			if err := json.Unmarshal(data, &groups); err != nil {
+				return fmt.Errorf("invalid JSON in %s: %w", reposFile, err)
+			}
+
+			// Generate markdown table
+			var table strings.Builder
+			table.WriteString("| Day of Month | Group | Repos |\n")
+			table.WriteString("|:---:|--------|-------|\n")
+
+			for _, g := range groups {
+				day := formatDay(g.Schedule)
+				var repoNames []string
+				for _, r := range g.Repos {
+					name := extractRepoName(r.URL)
+					if r.Disabled {
+						name += " (disabled)"
+					}
+					repoNames = append(repoNames, name)
+				}
+				table.WriteString(fmt.Sprintf("| %s | `%s` | %s |\n", day, g.Group, strings.Join(repoNames, ", ")))
+			}
+
+			// Read README and replace between markers
+			readme, err := os.ReadFile(readmePath)
+			if err != nil {
+				return fmt.Errorf("cannot read %s: %w", readmePath, err)
+			}
+
+			content := string(readme)
+			startMarker := "<!-- SCHEDULE-TABLE-START -->"
+			endMarker := "<!-- SCHEDULE-TABLE-END -->"
+
+			startIdx := strings.Index(content, startMarker)
+			endIdx := strings.Index(content, endMarker)
+			if startIdx == -1 || endIdx == -1 {
+				return fmt.Errorf("markers %s / %s not found in %s", startMarker, endMarker, readmePath)
+			}
+
+			newContent := content[:startIdx+len(startMarker)] + "\n" + table.String() + content[endIdx:]
+
+			if err := os.WriteFile(readmePath, []byte(newContent), 0644); err != nil {
+				return fmt.Errorf("cannot write %s: %w", readmePath, err)
+			}
+
+			fmt.Printf("Updated %s scheduling table (%d groups)\n", readmePath, len(groups))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&reposFile, "file", "f", "repos.json", "Repos JSON file")
+	cmd.Flags().StringVarP(&readmePath, "readme", "r", "README.md", "README file to update")
+
+	return cmd
+}
+
+func formatDay(day int) string {
+	suffix := "th"
+	switch {
+	case day == 1 || day == 21:
+		suffix = "st"
+	case day == 2 || day == 22:
+		suffix = "nd"
+	case day == 3 || day == 23:
+		suffix = "rd"
+	}
+	return fmt.Sprintf("%d%s", day, suffix)
+}
+
+func extractRepoName(url string) string {
+	// "https://github.com/SHL-India/FMS-focus.service.auth.git" → "auth"
+	name := url
+	name = strings.TrimSuffix(name, ".git")
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	// Strip common prefixes
+	for _, prefix := range []string{"FMS-focus.service.", "FOCUS-", "TDM-service.user.", "TDM-lambda-", "TDM-", "MFS-", "FMS-"} {
+		if strings.HasPrefix(name, prefix) {
+			name = name[len(prefix):]
+			break
+		}
+	}
+	return name
+}
+
+// resolveRepos parses the repos JSON file, supporting both grouped and flat formats.
+// When scheduled=true, only groups matching today's day-of-month are included.
+// When group is non-empty, only that specific group is included.
+func resolveRepos(data []byte, scheduled bool, group string) ([]types.RepoEntry, error) {
+	// Try grouped format first
+	var groups []types.RepoGroup
+	if err := json.Unmarshal(data, &groups); err == nil && len(groups) > 0 && groups[0].Group != "" {
+		today := time.Now().Day()
+		var repos []types.RepoEntry
+
+		for _, g := range groups {
+			// Filter by group name if specified
+			if group != "" && g.Group != group {
+				continue
+			}
+			// Filter by schedule if --scheduled flag is set
+			if scheduled && g.Schedule != today {
+				continue
+			}
+			for _, r := range g.Repos {
+				if !r.Disabled {
+					repos = append(repos, r)
+				}
+			}
+		}
+		return repos, nil
+	}
+
+	// Fall back to flat format
+	var repos []types.RepoEntry
+	if err := json.Unmarshal(data, &repos); err != nil {
+		return nil, err
+	}
+
+	// Filter disabled repos
+	var active []types.RepoEntry
+	for _, r := range repos {
+		if !r.Disabled {
+			active = append(active, r)
+		}
+	}
+	return active, nil
+}
+
+// makeLLMClient creates an LLM client based on provider preference.
+// "auto" = GitHub Models primary (if token available) + Ollama fallback
+// "github" = GitHub Models only
+// "ollama" = Ollama only
+func makeLLMClient(githubToken, provider, ollamaURL, modelOverride string) *llm.Client {
+	switch provider {
+	case "github":
+		return llm.NewClient(githubToken, modelOverride, "", "")
+	case "ollama":
+		return llm.NewClient("", "", ollamaURL, modelOverride)
+	default: // "auto"
+		return llm.NewClient(githubToken, modelOverride, ollamaURL, modelOverride)
+	}
+}
+
 // processSingleRepo runs the full upgrade pipeline on one repo and returns a result.
-func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun, codemods bool, engineDir string) types.BatchResult {
+func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target int, dryRun bool, llmProvider, llmURL, llmModel string) types.BatchResult {
 	gh := ghclient.New(token, owner, repo, baseBranch, target, dryRun, "/tmp/upgrade-work")
 
 	repoPath, err := gh.Clone()
@@ -523,35 +845,28 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		return types.BatchResult{Status: "error", Error: fmt.Sprintf("branch: %v", err)}
 	}
 
-	// Phase 1: AST codemods
+	// Phase 1: Config transforms + package.json upgrades
 	var filesChanged []string
-	var codemodsApplied []string
-	if codemods {
-		engine := codemod.NewEngine(engineDir)
-		resp, cErr := engine.Run(repoPath, target, nil)
-		if cErr != nil {
-			fmt.Fprintf(os.Stderr, "  Codemod engine error: %v\n", cErr)
-		} else {
-			for _, r := range resp.Results {
-				if r.Success {
-					fmt.Printf("  [OK] Codemod %s: %d files modified\n", r.Name, len(r.FilesModified))
-					if len(r.FilesModified) > 0 {
-						codemodsApplied = append(codemodsApplied, r.Name)
-					}
-				} else {
-					fmt.Printf("  [FAIL] Codemod %s: %s\n", r.Name, r.Error)
-				}
-			}
-			filesChanged = append(filesChanged, resp.TotalFilesModified...)
-		}
-	}
-
-	// Phase 2: Config transforms + package.json upgrades
 	configChanged, err := transformer.Transform(repoPath, configs, target, issues)
 	if err != nil {
 		return types.BatchResult{Status: "error", Error: fmt.Sprintf("transform: %v", err)}
 	}
 	filesChanged = append(filesChanged, configChanged...)
+
+	// Phase 2: LLM-powered API migration for upgraded dependencies
+	if llmProvider != "off" && len(issues) > 0 {
+		llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+		if err := llmClient.Ping(); err != nil {
+			fmt.Printf("  [LLM-CODEMOD] Cannot reach LLM: %v\n", err)
+		} else {
+			fmt.Printf("  [LLM] Using provider: %s\n", llmClient.ActiveProvider())
+			codemodResult := llm.FixDeprecatedAPIs(llmClient, repoPath, target, issues)
+			if len(codemodResult.FilesFixed) > 0 {
+				fmt.Printf("  [OK] LLM codemod: migrated %d file(s)\n", len(codemodResult.FilesFixed))
+				filesChanged = append(filesChanged, codemodResult.FilesFixed...)
+			}
+		}
+	}
 
 	if len(filesChanged) == 0 {
 		return types.BatchResult{Status: "up-to-date"}
@@ -578,12 +893,57 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		} else if len(vResult.TestErrors) > 0 {
 			fmt.Printf("  [WARN] %d test(s) failed\n", len(vResult.TestErrors))
 		}
+
+		// Phase 3b: LLM-assisted fix for tsc errors and test failures
+		if llmProvider != "off" && (!vResult.TscOk || !vResult.TestsOk) {
+			llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+			if err := llmClient.Ping(); err == nil {
+				fmt.Printf("  [LLM] Connected via %s\n", llmClient.ActiveProvider())
+
+				if !vResult.TscOk && len(vResult.TscErrors) > 0 {
+					fmt.Printf("  [LLM] Fixing %d tsc error(s)...\n", len(vResult.TscErrors))
+					tscResult := llm.FixTscErrors(llmClient, repoPath, target)
+					filesChanged = append(filesChanged, tscResult.FilesFixed...)
+					if len(tscResult.TscRemaining) == 0 {
+						fmt.Println("  [OK] All tsc errors fixed by LLM")
+						vResult.TscOk = true
+					} else {
+						fmt.Printf("  [WARN] %d tsc error(s) remain\n", len(tscResult.TscRemaining))
+					}
+				}
+
+				if !vResult.TestsOk && len(vResult.TestErrors) > 0 {
+					fmt.Printf("  [LLM] Fixing %d test failure(s)...\n", len(vResult.TestErrors))
+					testResult := llm.FixTestErrors(llmClient, repoPath, target)
+					filesChanged = append(filesChanged, testResult.FilesFixed...)
+					if len(testResult.TestRemaining) == 0 {
+						fmt.Println("  [OK] All test failures fixed by LLM")
+						vResult.TestsOk = true
+					} else {
+						fmt.Printf("  [WARN] %d test failure(s) remain\n", len(testResult.TestRemaining))
+					}
+				}
+			}
+		}
 	}
 
 	// Phase 4: Audit
 	auditResult := verify.RunAudit(repoPath)
 	if auditResult.FixApplied && len(auditResult.Before) > len(auditResult.After) {
 		filesChanged = append(filesChanged, "package-lock.json")
+	}
+
+	// Phase 4b: LLM-assisted vulnerability resolution
+	if llmProvider != "off" && len(auditResult.After) > 0 {
+		llmClient := makeLLMClient(token, llmProvider, llmURL, llmModel)
+		if err := llmClient.Ping(); err == nil {
+			fmt.Printf("  [LLM] Attempting to resolve %d remaining vulnerabilities...\n", len(auditResult.After))
+			vulnResult := llm.FixVulnerabilities(llmClient, repoPath, auditResult.After)
+			filesChanged = append(filesChanged, vulnResult.FilesFixed...)
+			if len(vulnResult.FilesFixed) > 0 {
+				fmt.Printf("  [LLM] Modified %d file(s) to resolve vulnerabilities\n", len(vulnResult.FilesFixed))
+			}
+		}
 	}
 
 	// Stamp new version
@@ -606,7 +966,19 @@ func processSingleRepo(token, repoURL, owner, repo, baseBranch string, target in
 		DetectedConfigs:  configs,
 		DependencyIssues: issues,
 		FilesChanged:     filesChanged,
-		CodemodsApplied:  codemodsApplied,
+		Verify: &types.VerifySummary{
+			NpmInstallOk:    vResult.NpmInstallOk,
+			TscOk:           vResult.TscOk,
+			TscErrorCount:   len(vResult.TscErrors),
+			TscFixedByLLM:   !vResult.TscOk && len(vResult.TscErrors) > 0,
+			TestsOk:         vResult.TestsOk,
+			RuntimeOk:       vResult.RuntimeOk,
+			RuntimeSkipped:  !vResult.Runtime.Started,
+			RuntimeError:    vResult.Runtime.Error,
+			AuditBefore:     len(vResult.Audit.Before),
+			AuditAfter:      len(vResult.Audit.After),
+			AuditFixApplied: vResult.Audit.FixApplied,
+		},
 	}
 
 	prURL, err := gh.CreatePR(report, branch)

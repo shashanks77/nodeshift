@@ -46,18 +46,24 @@ type AuditResult struct {
 }
 
 type VerifyResult struct {
-	NpmInstallOk bool        `json:"npmInstallOk"`
-	NpmErrors    string      `json:"npmErrors,omitempty"`
-	TscOk        bool        `json:"tscOk"`
-	TscErrors    []TscError  `json:"tscErrors,omitempty"`
-	TestsOk      bool        `json:"testsOk"`
-	TestErrors   []TestError `json:"testErrors,omitempty"`
-	AutoFixed    []string    `json:"autoFixed,omitempty"`
-	Audit        AuditResult `json:"audit,omitempty"`
+	NpmInstallOk bool          `json:"npmInstallOk"`
+	NpmErrors    string        `json:"npmErrors,omitempty"`
+	TscOk        bool          `json:"tscOk"`
+	TscErrors    []TscError    `json:"tscErrors,omitempty"`
+	TestsOk      bool          `json:"testsOk"`
+	TestErrors   []TestError   `json:"testErrors,omitempty"`
+	RuntimeOk    bool          `json:"runtimeOk"`
+	Runtime      RuntimeResult `json:"runtime,omitempty"`
+	AutoFixed    []string      `json:"autoFixed,omitempty"`
+	Audit        AuditResult   `json:"audit,omitempty"`
 }
 
 func Verify(repoPath string, maxRetries int) VerifyResult {
 	result := VerifyResult{}
+
+	// Preserve package.json key ordering — npm install may reformat it
+	pkgPath := filepath.Join(repoPath, "package.json")
+	origPkg, _ := os.ReadFile(pkgPath)
 
 	ok, errMsg := RunNpmInstall(repoPath)
 	if !ok {
@@ -71,6 +77,11 @@ func Verify(repoPath string, maxRetries int) VerifyResult {
 	result.NpmErrors = errMsg
 	if !ok {
 		return result
+	}
+
+	// Restore original package.json to preserve key ordering
+	if len(origPkg) > 0 {
+		os.WriteFile(pkgPath, origPkg, 0644)
 	}
 
 	result.TscOk, result.TscErrors = RunTsc(repoPath)
@@ -169,32 +180,87 @@ func FixTestConfig(repoPath string) []string {
 		return fixed
 	}
 
+	// Ensure test script has NODE_OPTIONS=--experimental-vm-modules for AWS SDK v3 ESM compat
+	scriptFixes := fixTestScriptNodeOptions(pkgPath, pkg)
+	if len(scriptFixes) > 0 {
+		fixed = append(fixed, scriptFixes...)
+		// Re-read package.json since it was modified
+		data, _ = os.ReadFile(pkgPath)
+		json.Unmarshal(data, &pkg)
+	}
+
 	jest, ok := pkg["jest"].(map[string]interface{})
 	if !ok {
 		// Try jest.config.js instead
-		return fixJestConfigJs(repoPath)
+		jestFixes := fixJestConfigJs(repoPath)
+		fixed = append(fixed, jestFixes...)
+		return fixed
 	}
 
 	modified := false
 
 	if _, exists := jest["moduleDirectories"]; !exists {
-		jest["moduleDirectories"] = []string{"node_modules", "<rootDir>"}
 		modified = true
 	}
 
-	// Add transformIgnorePatterns for @aws-sdk and @smithy ESM packages
 	if _, exists := jest["transformIgnorePatterns"]; !exists {
-		jest["transformIgnorePatterns"] = []string{"node_modules/(?!(@aws-sdk|@smithy)/)"}
 		modified = true
 	}
 
 	if modified {
-		pkg["jest"] = jest
-		out, err := json.MarshalIndent(pkg, "", "  ")
+		// Text-based insertion into jest section to preserve key ordering
+		data, err := os.ReadFile(pkgPath)
 		if err != nil {
 			return fixed
 		}
-		os.WriteFile(pkgPath, append(out, '\n'), 0644)
+		content := string(data)
+
+		// Find the "jest" section and insert missing fields
+		if _, exists := jest["moduleDirectories"]; !exists {
+			reJest := regexp.MustCompile(`("jest"\s*:\s*\{)`)
+			content = reJest.ReplaceAllString(content, "${1}\n    \"moduleDirectories\": [\"node_modules\", \"<rootDir>\"],")
+		}
+		if _, exists := jest["transformIgnorePatterns"]; !exists {
+			reJest := regexp.MustCompile(`("jest"\s*:\s*\{)`)
+			content = reJest.ReplaceAllString(content, "${1}\n    \"transformIgnorePatterns\": [\"node_modules/(?!(@aws-sdk|@smithy)/)\"],")
+		}
+
+		os.WriteFile(pkgPath, []byte(content), 0644)
+		fixed = append(fixed, "package.json")
+	}
+	return fixed
+}
+
+// fixTestScriptNodeOptions ensures the package.json test script includes
+// NODE_OPTIONS=--experimental-vm-modules so that CI environments (e.g. Bamboo)
+// can run tests with AWS SDK v3 ESM packages without import errors.
+func fixTestScriptNodeOptions(pkgPath string, pkg map[string]interface{}) []string {
+	var fixed []string
+	scripts, ok := pkg["scripts"].(map[string]interface{})
+	if !ok {
+		return fixed
+	}
+
+	testScript, ok := scripts["test"].(string)
+	if !ok || testScript == "" {
+		return fixed
+	}
+
+	if strings.Contains(testScript, "--experimental-vm-modules") {
+		return fixed
+	}
+
+	// Text-based replacement to preserve key ordering
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return fixed
+	}
+	content := string(data)
+	newTestScript := "NODE_OPTIONS=--experimental-vm-modules " + testScript
+	re := regexp.MustCompile(`("test"\s*:\s*)"` + regexp.QuoteMeta(testScript) + `"`)
+	updated := re.ReplaceAllString(content, `${1}"`+strings.ReplaceAll(newTestScript, `$`, `$$`)+`"`)
+	if updated != content {
+		os.WriteFile(pkgPath, []byte(updated), 0644)
 		fixed = append(fixed, "package.json")
 	}
 	return fixed
@@ -815,11 +881,43 @@ func RunAudit(repoPath string) AuditResult {
 		return result
 	}
 
-	_, fixErr := runWithTimeout(repoPath, 120*time.Second, "npm", "audit", "fix", "--legacy-peer-deps")
-	if fixErr != nil && strings.Contains(fixErr.Error(), "timed out") {
-		result.FixError = "npm audit fix timed out"
-		return result
+	// Snapshot package.json and lockfile for rollback
+	pkgPath := filepath.Join(repoPath, "package.json")
+	lockPath := filepath.Join(repoPath, "package-lock.json")
+	pkgBackup, _ := os.ReadFile(pkgPath)
+	lockBackup, _ := os.ReadFile(lockPath)
+
+	// Try aggressive fix first: npm audit fix --force
+	fmt.Println("  [AUDIT] Trying npm audit fix --force...")
+	_, forceErr := runWithTimeout(repoPath, 180*time.Second, "npm", "audit", "fix", "--force")
+	if forceErr != nil && strings.Contains(forceErr.Error(), "timed out") {
+		result.FixError = "npm audit fix --force timed out"
+		// Restore and try conservative
+		os.WriteFile(pkgPath, pkgBackup, 0644)
+		os.WriteFile(lockPath, lockBackup, 0644)
+		runWithTimeout(repoPath, 60*time.Second, "npm", "install", "--legacy-peer-deps")
+	} else {
+		// Verify the force fix didn't break npm install / tsc
+		installOk, _ := RunNpmInstall(repoPath)
+		tscOk, _ := RunTsc(repoPath)
+
+		if !installOk || !tscOk {
+			// Rollback: force fix broke things
+			fmt.Println("  [AUDIT] --force broke build, rolling back to conservative fix...")
+			os.WriteFile(pkgPath, pkgBackup, 0644)
+			os.WriteFile(lockPath, lockBackup, 0644)
+			runWithTimeout(repoPath, 60*time.Second, "npm", "install", "--legacy-peer-deps")
+			// Now try conservative
+			_, fixErr := runWithTimeout(repoPath, 120*time.Second, "npm", "audit", "fix", "--legacy-peer-deps")
+			if fixErr != nil && strings.Contains(fixErr.Error(), "timed out") {
+				result.FixError = "npm audit fix timed out"
+				return result
+			}
+		} else {
+			fmt.Println("  [AUDIT] --force succeeded, build still passes")
+		}
 	}
+
 	result.FixApplied = true
 
 	afterOut, _ := runWithTimeout(repoPath, 60*time.Second, "npm", "audit", "--json")

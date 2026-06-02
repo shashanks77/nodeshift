@@ -1,0 +1,13 @@
+The following package.json has npm audit vulnerabilities that could not be resolved by `npm audit fix`.
+
+package.json:
+```json
+%s
+```
+
+Remaining vulnerabilities:
+%s
+
+For each vulnerability, determine if the dependency can be safely upgraded to a non-vulnerable version.
+Return the complete fixed package.json with updated dependency versions that resolve the vulnerabilities.
+Only change versions for packages with known fixes. Do not remove dependencies.

@@ -51,11 +51,11 @@ scan:
 #   make upgrade REPO=../tci-focus BASE=develop
 #   make upgrade REPO=../tci-focus --dry-run
 upgrade:
-	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods
+	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master)
 
 # Dry run - preview changes locally without pushing or creating PR
 dry-run:
-	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods --dry-run
+	./bin/$(BINARY_NAME) upgrade $(REPO) --target $(or $(TARGET),24) --base $(or $(BASE),master) --dry-run
 
 # Batch upgrade - process multiple repos from a JSON file
 # Examples:
@@ -63,7 +63,7 @@ dry-run:
 #   make batch FILE=repos.json TARGET=22
 #   make batch FILE=repos.json --dry-run
 batch:
-	./bin/$(BINARY_NAME) batch --file $(or $(FILE),repos.json) --target $(or $(TARGET),24) --base $(or $(BASE),master) --codemods
+	./bin/$(BINARY_NAME) batch --file $(or $(FILE),repos.json) --target $(or $(TARGET),24) --base $(or $(BASE),master)
 
 # Run tests
 test:
@@ -100,3 +100,13 @@ create-schedule:
 # Clean build artifacts
 clean:
 	rm -rf bin/
+
+# Install git hooks
+setup:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Git hooks installed."
+
+# Regenerate README scheduling table from repos.json
+docs: build
+	./bin/$(BINARY_NAME) docs --file repos.json --readme README.md

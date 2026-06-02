@@ -1,0 +1,12 @@
+We are upgrading a Node.js project to Node %d. The following dependencies were upgraded or replaced:
+
+%s
+
+The file below uses APIs from these packages. Rewrite it to use the correct modern APIs for the new package versions. If a package was replaced entirely, migrate to the replacement package's API.
+
+File: %s
+```
+%s
+```
+%s
+Return the complete updated file content.

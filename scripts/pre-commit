@@ -1,0 +1,14 @@
+#!/bin/sh
+# Auto-regenerate README scheduling table if repos.json was modified
+
+if git diff --cached --name-only | grep -q "repos.json"; then
+  echo "[pre-commit] repos.json changed — regenerating README scheduling table..."
+  
+  # Build if binary doesn't exist
+  if [ ! -f bin/nodeshift ]; then
+    go build -o bin/nodeshift ./cmd/cli/
+  fi
+
+  ./bin/nodeshift docs --file repos.json --readme README.md
+  git add README.md
+fi
